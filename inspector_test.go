@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -496,5 +497,53 @@ func TestBackendFingerprintDriftPerChannel(t *testing.T) {
 	f, ok := findingRules(t, "fpchanged")["new_enum"]
 	if !ok || !strings.HasPrefix(f.Scope, scopeFingerprint+"|") || !strings.Contains(f.Path, "id_form=msg_…(24)") {
 		t.Fatalf("id form change on a channel must be reported as drift: %+v", findingRules(t, "fpchanged"))
+	}
+}
+
+// 上游下发 X-Codex-Turn-State、宿主未开启响应头透传：客户端收不到，必须提示；开启后或读不到宿主配置时不报。
+func TestStickyHeaderDroppedFollowsHostPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	saved := hostConfigPath
+	hostConfigPath = dir + "/config.yaml"
+	t.Cleanup(func() { hostConfigPath = saved })
+	rec := func() *record {
+		r := &record{}
+		r.det.ClientHeaders = map[string][]string{"User-Agent": {"codex-tui"}}
+		r.det.Usages = []usageInfo{{Headers: map[string][]string{"X-Codex-Turn-State": {"gAAAA"}}}}
+		return r
+	}
+	write := func(body string) {
+		if err := os.WriteFile(hostConfigPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hostConfigCache.Lock()
+		hostConfigCache.path = "" // 失效缓存
+		hostConfigCache.Unlock()
+	}
+	if got := hostPassthroughHeaders(); got != passthroughUnknown {
+		t.Fatalf("no config file must be unknown, got %s", got)
+	}
+	if f := checkStickyHeaderDropped(rec(), hostPassthroughHeaders(), finding{}); f != nil {
+		t.Fatalf("unknown host config must not produce a finding: %+v", f)
+	}
+	write("port: 8317\n")
+	if f := checkStickyHeaderDropped(rec(), hostPassthroughHeaders(), finding{}); f == nil || f.Rule != "sticky-header-dropped" || f.Evidence != "X-Codex-Turn-State" {
+		t.Fatalf("default (off) must be reported: %+v", f)
+	}
+	echoed := rec()
+	echoed.det.ClientHeaders["x-codex-turn-state"] = []string{"gAAAA"}
+	if f := checkStickyHeaderDropped(echoed, hostPassthroughHeaders(), finding{}); f != nil {
+		t.Fatalf("client already echoes the header: %+v", f)
+	}
+	write("port: 8317\npassthrough-headers: true\n")
+	if got := hostPassthroughHeaders(); got != passthroughOn {
+		t.Fatalf("want on, got %s", got)
+	}
+	if f := checkStickyHeaderDropped(rec(), hostPassthroughHeaders(), finding{}); f != nil {
+		t.Fatalf("passthrough on must not be reported: %+v", f)
+	}
+	write("name: not-a-cpa-config\n")
+	if got := hostPassthroughHeaders(); got != passthroughUnknown {
+		t.Fatalf("a foreign config.yaml must be unknown, got %s", got)
 	}
 }

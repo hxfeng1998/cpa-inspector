@@ -180,6 +180,7 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | | 响应里出现请求上下文之外的域名（聚合后可看出被插入的推广链接） | 备查 |
 | 隐私外泄 | 请求体含私钥、AWS / GitHub / Anthropic / OpenAI / Google / Slack / Stripe 密钥、JWT、带口令的连接串。证据始终打码；渠道为官方端点时降为备查 | 警告 |
 | 协议完整性 | 流缺 `message_start` / `message_stop` / `[DONE]` / `response.completed`，内容块未关闭，缺结束原因，成功但无内容 | 警告 / 留意 |
+| | 上游下发了需要客户端回传的响应头（`X-Codex-Turn-State`），但 CPA 的 `passthrough-headers` 为关闭，客户端收不到也就无法回传 | 留意 |
 | 字段漂移 | 见下节 | 留意 / 备查 |
 
 工具声明的识别覆盖：顶层 `tools`（Claude / Chat / Responses / Gemini `functionDeclarations`），以及新版 Codex 放在 `input[]` 里的 `additional_tools` 条目（含 `namespace` 嵌套）。
@@ -222,7 +223,9 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | ① 客户端请求 | 完整（凭据类脱敏） | 完整 |
 | ② 发往上游 | **拿不到** | 经协议翻译的路由完整；同协议直通时等同 ① |
 | ③ 上游响应 | 完整 | 经协议翻译的路由、以及 WebSocket 路由完整；其余同协议直通时等同 ④ |
-| ④ 返回客户端 | 拦截点可见的响应头 | 完整 |
+| ④ 返回客户端 | 见下方说明 | 完整 |
+
+**关于 ④ 的 Headers**：流式请求里，宿主交给拦截钩子的是上游响应头**原文**，并不等于客户端实际收到的——CPA 只有在 `passthrough-headers: true` 时才会（过滤逐跳头后）下发它们，默认关闭。插件会尽力读取 CPA 工作目录下的 `config.yaml` 来判断该开关，并在界面上如实标注"未下发 / 已下发 / 未知"，不把"拦截点所见"当成"客户端所得"。
 
 宿主侧的限制，插件无法绕过：
 

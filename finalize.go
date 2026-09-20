@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -137,6 +138,15 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 			found = append(found, f)
 		}
 	}
+	// 宿主是否把上游响应头下发给客户端：界面据此如实标注"④ 返回客户端"的 Headers。
+	passthrough := hostPassthroughHeaders()
+	if rec.det.Metadata == nil {
+		rec.det.Metadata = make(map[string]string)
+	}
+	rec.det.Metadata["host_passthrough_headers"] = passthrough
+	if f := checkStickyHeaderDropped(rec, passthrough, base); f != nil {
+		found = append(found, *f)
+	}
 	if cfg.ScanSecrets && len(rec.clientBody) > 0 {
 		secrets := scanSecrets(rec.clientBody, base)
 		if isOfficialChannel(s.Channel) {
@@ -243,4 +253,38 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// stickyResponseHeaders 是"上游下发、期望客户端在后续请求里原样带回"的响应头。
+var stickyResponseHeaders = []string{"x-codex-turn-state"}
+
+// checkStickyHeaderDropped：上游下发了需要客户端回传的头，但宿主没有开启响应头透传，
+// 客户端收不到，也就不可能回传——这条链路在代理这一跳断了。
+func checkStickyHeaderDropped(rec *record, passthrough string, base finding) *finding {
+	if passthrough != passthroughOff || len(rec.det.Usages) == 0 {
+		return nil
+	}
+	upstream := rec.det.Usages[len(rec.det.Usages)-1].Headers
+	for _, name := range stickyResponseHeaders {
+		if !hasHeader(upstream, name) || hasHeader(rec.det.ClientHeaders, name) {
+			continue
+		}
+		f := base
+		f.Severity, f.Category, f.Rule = sevNotice, catIntegrity, "sticky-header-dropped"
+		f.Title = "上游下发了需回传的响应头，但 CPA 未透传给客户端"
+		f.Detail = "CPA 的 passthrough-headers 为关闭（默认值），上游响应头不会下发给客户端，客户端也就无法在后续请求里带回它。对 X-Codex-Turn-State 而言，这可能让同一轮对话的后续请求失去上游的会话粘性（路由到不同后端、缓存命中下降）。在 config.yaml 里设置 passthrough-headers: true 即可。"
+		f.Evidence = http.CanonicalHeaderKey(name)
+		f.Key = findingKey(f.Rule, name, base.Channel)
+		return &f
+	}
+	return nil
+}
+
+func hasHeader(headers map[string][]string, name string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
