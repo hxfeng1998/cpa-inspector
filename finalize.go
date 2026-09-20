@@ -161,6 +161,22 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 		}
 	}
 
+	// 缓存失效检测：按会话追踪前缀与缓存读。
+	s.SessionID = sessionKey(rec.det.ClientHeaders, clientDoc, rec.det.Metadata)
+	if succeeded && clientOK && origin != nil && origin.Error == "" {
+		if total, cached := origin.inputTokens(), origin.cachedTokens(); total > 0 && cached >= 0 {
+			turn := sessionTurn{reqID: s.ID, started: s.StartedAt, completed: s.CompletedAt, model: rec.schemaModel(), channel: firstNonEmpty(s.Channel, s.Provider), authID: s.AuthID, total: total, cached: cached}
+			turn.items, turn.sizes = promptItems(clientDoc)
+			if origin.Echo != nil {
+				turn.insSHA = firstNonEmpty(origin.Echo.InstructionsSHA, "none")
+			}
+			if verdict := ins.sessions.observe(s.SessionID, turn); verdict != nil {
+				s.Cache = verdict
+				found = append(found, cacheFinding(verdict, base))
+			}
+		}
+	}
+
 	// 宿主是否把上游响应头下发给客户端：界面据此如实标注"④ 返回客户端"的 Headers。
 	passthrough := hostPassthroughHeaders()
 	if rec.det.Metadata == nil {

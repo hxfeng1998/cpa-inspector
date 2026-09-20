@@ -127,6 +127,8 @@ type summary struct {
 	Findings       []finding      `json:"findings,omitempty"`
 	Severity       string         `json:"severity,omitempty"`
 	SeverityCounts map[string]int `json:"severity_counts,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	Cache          *cacheVerdict  `json:"cache,omitempty"` // 非空表示本轮发生了本可避免的缓存失效
 }
 
 // detail 是落盘的请求详情（体积大，按需读取）。
@@ -167,6 +169,7 @@ type inspector struct {
 	findings  map[string]*aggFinding
 	findDirty bool
 	store     *store
+	sessions  *sessionTracker
 	started   time.Time
 	stats     struct{ Requests, UpstreamChunks, DownstreamChunks, Orphans int64 }
 	stop      chan struct{}
@@ -206,6 +209,7 @@ func configureInspector(cfg config) {
 		schema:   newSchemaStore(),
 		findings: make(map[string]*aggFinding),
 		store:    openStore(cfg.DataDir, cfg.MaxRecords, int64(cfg.MaxDiskMB)<<20),
+		sessions: newSessionTracker(),
 		started:  time.Now(),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),

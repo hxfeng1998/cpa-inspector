@@ -116,6 +116,8 @@ type groupStat struct {
 	AvgTTFBMs      int64          `json:"avg_ttfb_ms"`
 	InputTokens    int64          `json:"input_tokens"`
 	OutputTokens   int64          `json:"output_tokens"`
+	CacheLost      int64          `json:"cache_lost_tokens"`
+	CacheLostCount int            `json:"cache_lost_count"`
 	Severity       string         `json:"severity,omitempty"`
 	Channels       []string       `json:"channels,omitempty"`
 	Models         []string       `json:"models,omitempty"`
@@ -216,6 +218,10 @@ func (ins *inspector) apiOverview() map[string]any {
 			if s.Usage != nil {
 				g.InputTokens += s.Usage.InputTokens + s.Usage.CacheRead + s.Usage.CacheCreation
 				g.OutputTokens += s.Usage.OutputTokens
+			}
+			if s.Cache != nil {
+				g.CacheLost += s.Cache.Lost
+				g.CacheLostCount++
 			}
 			if severityRank[s.Severity] > severityRank[g.Severity] {
 				g.Severity = s.Severity
@@ -351,7 +357,7 @@ func (ins *inspector) apiRecords(req managementRequest) map[string]any {
 }
 
 func summaryMatches(s *summary, q string) bool {
-	fields := []string{s.ID, s.TraceID, s.Model, s.RequestedModel, s.ResponseModel, s.Channel, s.Provider, s.Path, s.Error, s.AuthID, s.StopReason, s.Provenance}
+	fields := []string{s.ID, s.TraceID, s.SessionID, s.Model, s.RequestedModel, s.ResponseModel, s.Channel, s.Provider, s.Path, s.Error, s.AuthID, s.StopReason, s.Provenance}
 	fields = append(fields, s.ToolCalls...)
 	for _, f := range s.Findings {
 		fields = append(fields, f.Title, f.Evidence, f.Rule, f.Path)

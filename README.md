@@ -180,6 +180,7 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | | 上游为公网明文 HTTP | 警告 |
 | | 响应里出现请求上下文之外的域名（聚合后可看出被插入的推广链接） | 备查 |
 | 隐私外泄 | 请求体含私钥、AWS / GitHub / Anthropic / OpenAI / Google / Slack / Stripe 密钥、JWT、带口令的连接串。证据始终打码；渠道为官方端点时降为备查 | 警告 |
+| 缓存与计费 | **同一会话的提示词缓存失效**：本轮与上一轮共享 ≥90% 前缀、间隔 ≤5 分钟、上一轮输入 ≥2048 token，缓存读却不到预期的一半。给出损失的 token 数与归因（渠道变了 / 凭据变了 / 渠道注入的 instructions 变了 / 都没变＝渠道内部切换了上游账号） | 留意 / 警告 |
 | 协议完整性 | 流缺 `message_start` / `message_stop` / `[DONE]` / `response.completed`，内容块未关闭，缺结束原因，成功但无内容 | 警告 / 留意 |
 | | 上游下发了需要客户端回传的响应头（`X-Codex-Turn-State`），但 CPA 的 `passthrough-headers` 为关闭，客户端收不到也就无法回传 | 留意 |
 | 字段漂移 | 见下节 | 留意 / 备查 |
@@ -194,6 +195,18 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 详情页"③ 上游响应"里有对应的"上游回显的生效参数"区块。Claude / Chat Completions 协议不回显请求参数，此项检查不适用。
 
 工具声明的识别覆盖：顶层 `tools`（Claude / Chat / Responses / Gemini `functionDeclarations`），以及新版 Codex 放在 `input[]` 里的 `additional_tools` 条目（含 `namespace` 嵌套）。
+
+## 缓存失效是怎么判定的
+
+提示词缓存的命中条件是"同一账号（组织）下、前缀逐字节相同、未过期"。第三方渠道背后往往是账号池：会话中途被切到另一个账号，或渠道换了一份注入的 `instructions`，缓存就全部作废——OpenAI 系按原价重新计费，Claude 系还要再付一次缓存写入的溢价。
+
+插件按会话追踪（会话标识优先取客户端的会话头，其次 `prompt_cache_key`、Claude Code 的 `metadata.user_id`）。判定刻意保守，只在"本该命中"时才报：
+
+- 把请求拆成前缀条目（工具声明、system / instructions、每条消息）逐条哈希，与同会话里**已结束**的历史轮次比较，取公共前缀最长的一轮（Codex 会穿插"生成标题"之类的旁路请求，不能简单取上一条）；
+- 公共前缀 ≥ 90%、间隔 ≤ 5 分钟、上一轮输入 ≥ 2048 token；新对话、上下文压缩后前缀变了的不算；并行发出的请求不互相比较；
+- 此时缓存读 < 预期的一半，才报"缓存失效"。
+
+概览页的模型 / 渠道表有"缓存损失"一列，可以直接比较各渠道。多条凭据被 CPA 轮询导致的失效会被归因为"凭据变了"，对应的解法是开启 `routing.session-affinity`。
 
 ## 字段漂移是怎么判定的
 

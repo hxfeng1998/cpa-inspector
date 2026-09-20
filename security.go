@@ -26,6 +26,7 @@ const (
 	catPrivacy   = "privacy"   // 我方外泄：密钥随请求发给第三方
 	catIntegrity = "integrity" // 协议完整性：截断、事件错序
 	catDrift     = "drift"     // 字段漂移 / 灰测信号
+	catCost      = "cost"      // 缓存与计费：本可避免的重复计费
 )
 
 type finding struct {

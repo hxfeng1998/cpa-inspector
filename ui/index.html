@@ -292,7 +292,7 @@ const ICONS = {
   info: "M6 1a5 5 0 100 10A5 5 0 006 1zm0 2.2a2.8 2.8 0 110 5.6 2.8 2.8 0 010-5.6z", ok: "M1 6.5l3.2 3.2L11 2.6 9.8 1.5 4.2 7.4 2.2 5.3z",
 };
 const SEV_LABEL = { critical: "严重", warn: "警告", notice: "留意", info: "备查", ok: "正常" };
-const CAT_LABEL = { security: "渠道安全", privacy: "隐私外泄", integrity: "协议完整性", drift: "字段漂移" };
+const CAT_LABEL = { security: "渠道安全", privacy: "隐私外泄", integrity: "协议完整性", drift: "字段漂移", cost: "缓存与计费" };
 const DIR_LABEL = { client_request: "客户端请求", upstream_request: "发往上游的请求", upstream_response: "上游原始响应", downstream_response: "返回客户端的响应", upstream_headers: "上游响应头", upstream_ws: "上游 WebSocket 事件", upstream_fingerprint: "后端指纹（按渠道）" };
 function sev(level, text) {
   const svg = s("svg", { viewBox: "0 0 12 12", "aria-hidden": "true" }, s("path", { d: ICONS[level] || ICONS.info, fill: "currentColor", "fill-rule": "evenodd" }));
@@ -488,9 +488,9 @@ function groupTable(title, rows, kind) {
         (g.response_models || []).filter((m) => kind === "model" && m !== g.name).slice(0, 2).map((m) => h("span", { class: "tag", title: "上游自报模型" }, "↩ " + m)),
         (g.provenance || []).map((p) => h("span", { class: "tag" }, p)))),
     h("td", { class: "r num" }, nf.format(g.requests)), h("td", { class: "r num" }, g.failed ? nf.format(g.failed) : "–"),
-    h("td", { class: "r num" }, ms(g.avg_ttfb_ms)), h("td", {}, g.severity ? sev(g.severity) : sev("ok")), h("td", { class: "muted", style: "white-space:nowrap" }, rel(g.last_seen))));
+    h("td", { class: "r num" }, ms(g.avg_ttfb_ms)), h("td", { class: "r num", title: g.cache_lost_count ? g.cache_lost_count + " 次缓存失效" : "" }, g.cache_lost_tokens ? compact(g.cache_lost_tokens) : h("span", { class: "muted" }, "–")), h("td", {}, g.severity ? sev(g.severity) : sev("ok")), h("td", { class: "muted", style: "white-space:nowrap" }, rel(g.last_seen))));
   return h("section", { class: "card" }, h("header", {}, h("h3", {}, title)), h("div", { class: "tablewrap", style: "padding:6px 6px 8px" },
-    rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, title), h("th", { class: "r" }, "请求"), h("th", { class: "r" }, "失败"), h("th", { class: "r" }, "平均首包"), h("th", {}, "最高级别"), h("th", {}, "最近"))), h("tbody", {}, body))
+    rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, title), h("th", { class: "r" }, "请求"), h("th", { class: "r" }, "失败"), h("th", { class: "r" }, "平均首包"), h("th", { class: "r", title: "同一会话内本可命中却未命中的缓存 token 估算" }, "缓存损失"), h("th", {}, "最高级别"), h("th", {}, "最近"))), h("tbody", {}, body))
       : h("div", { class: "empty" }, "还没有数据。让一个请求经过代理试试。")));
 }
 
@@ -511,7 +511,7 @@ function scopeLabel(scope) { const [d, f, e] = scope.split("|"); return (DIR_LAB
 async function viewFindings(sink) {
   const data = await api("/findings", null, sink), ff = state.findFilter;
   const list = data.findings.filter((f) => (!ff.cat || f.category === ff.cat) && (!ff.open || !f.acked));
-  const cats = [["", "全部"], ["security", "渠道安全"], ["privacy", "隐私外泄"], ["integrity", "协议完整性"], ["drift", "字段漂移"]];
+  const cats = [["", "全部"], ["security", "渠道安全"], ["privacy", "隐私外泄"], ["integrity", "协议完整性"], ["cost", "缓存与计费"], ["drift", "字段漂移"]];
   return h("div", {}, head("发现", "同一问题跨请求聚合为一条；确认后不再计入待办。"),
     h("div", { class: "filters" },
       h("div", { class: "seg", role: "group", "aria-label": "类别" }, cats.map(([id, label]) => h("button", { "aria-pressed": String(ff.cat === id), onclick: () => { ff.cat = id; refresh(false); } }, label + (id ? " " + data.findings.filter((f) => f.category === id && !f.acked).length : "")))),
@@ -548,7 +548,7 @@ function recordsTable(data) {
       h("td", { class: "muted num" }, rel(r.started_at)),
       h("td", {}, h("div", { class: "mono clip" }, r.requested_model || r.model, r.model && r.model !== r.requested_model ? [h("span", { class: "arrow" }, "→"), r.model] : null),
         h("div", { class: "chips", style: "margin-top:3px" }, r.response_model && mismatch ? h("span", { class: "tag new" }, "自报 " + r.response_model) : null,
-          h("span", { class: "tag" }, (r.source_format || "?") + " → " + (r.to_format || "?")), r.stream ? h("span", { class: "tag" }, "stream") : null, r.provenance ? h("span", { class: "tag" }, r.provenance) : null)),
+          h("span", { class: "tag" }, (r.source_format || "?") + " → " + (r.to_format || "?")), r.stream ? h("span", { class: "tag" }, "stream") : null, r.cache ? h("span", { class: "tag new", title: r.cache.cause }, "缓存失效 −" + compact(r.cache.lost_tokens)) : null, r.provenance ? h("span", { class: "tag" }, r.provenance) : null)),
       h("td", {}, h("div", { class: "clip" }, r.channel || r.provider || "–"), (r.tool_calls || []).length ? h("div", { class: "muted clip", style: "font-size:12px" }, "工具：" + r.tool_calls.join(", ")) : null),
       h("td", {}, inflight ? h("span", { class: "tag new" }, "进行中") : r.outcome === "succeeded" ? h("span", { class: "sub" }, r.stop_reason || "完成") : h("span", { title: r.error }, sev("critical", (r.outcome === "canceled" ? "取消" : r.outcome === "rejected" ? "拒绝" : r.outcome === "abandoned" ? "中断" : "失败") + (r.status_code && r.status_code !== 200 ? " " + r.status_code : "")))),
       h("td", { class: "r num" }, u ? compact(u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens) : "–", h("span", { class: "arrow" }, "/"), u ? compact(u.output_tokens) : "–"),
@@ -715,7 +715,9 @@ async function openRecord(id) {
   const panels = {
     summary: () => h("div", {}, h("section", { class: "card", style: "margin-bottom:14px" }, h("div", { class: "body" }, h("div", { class: "kv" },
         kv("结果", su.outcome + (su.status_code ? " · " + su.status_code : "")), kv("总耗时", ms(su.duration_ms)), kv("首包", ms(su.ttfb_ms)), kv("尝试次数", su.attempts), kv("请求体", bytes(su.request_bytes)), kv("上游 / 下游响应", bytes(su.upstream_bytes) + " / " + bytes(su.downstream_bytes)),
-        kv("输入 token", u ? nf.format(u.input_tokens) : "–"), kv("缓存读 / 写", u ? nf.format(u.cache_read_tokens) + " / " + nf.format(u.cache_creation_tokens) : "–"), kv("输出 token", u ? nf.format(u.output_tokens) + (u.reasoning_tokens ? "（推理 " + nf.format(u.reasoning_tokens) + "）" : "") : "–"), kv("凭据", su.auth_id, true), kv("Request ID", su.id, true), kv("Trace ID", su.trace_id, true)),
+        kv("输入 token", u ? nf.format(u.input_tokens) : "–"), kv("缓存读 / 写", u ? nf.format(u.cache_read_tokens) + " / " + nf.format(u.cache_creation_tokens) : "–"), kv("输出 token", u ? nf.format(u.output_tokens) + (u.reasoning_tokens ? "（推理 " + nf.format(u.reasoning_tokens) + "）" : "") : "–"), kv("凭据", su.auth_id, true), kv("Request ID", su.id, true), kv("Trace ID", su.trace_id, true), kv("会话", su.session_id, true)),
+        su.cache ? h("div", { style: "margin-top:14px;padding-top:14px;border-top:1px solid var(--hair)" }, h("div", { style: "display:flex;gap:8px;align-items:center;margin-bottom:8px" }, sev("warn", "缓存失效"), h("b", {}, "预期缓存读 ≈ " + nf.format(su.cache.expected_cached_tokens) + " token，实际 " + nf.format(su.cache.actual_cached_tokens) + "，损失 ≈ " + nf.format(su.cache.lost_tokens))),
+          h("div", { class: "sub", style: "font-size:13px" }, "与上一轮共享 " + su.cache.shared_prefix_percent + "% 前缀、间隔 " + su.cache.gap_seconds + " 秒。原因：" + su.cache.cause + "。 ", h("button", { class: "btn ghost sm", onclick: () => { close(); openRecord(su.cache.previous_request_id); } }, "查看上一轮 →"))) : null,
         su.error ? h("pre", { class: "raw", style: "margin-top:12px;color:var(--critical)" }, su.error) : null)),
       h("section", { class: "card" }, h("header", {}, h("h3", {}, `本次请求的发现（${(su.findings || []).length}）`)), h("div", { class: "body" }, (su.findings || []).length ? su.findings.map((f) => findingRow(Object.assign({}, f, { request_id: "" }), false)) : h("div", { class: "empty" }, "未发现异常")))),
     chat: () => conversationView(de, su),
