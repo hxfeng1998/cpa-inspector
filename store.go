@@ -301,13 +301,13 @@ func (st *store) loadState(schema *schemaStore, findings *map[string]*aggFinding
 		if json.Unmarshal(raw, &loaded) == nil {
 			dropped := 0
 			for key, f := range loaded { // 同上：按随机 ID 报出来的"新字段"不是真漂移
-				if f.Category == catDrift && normalizePath(f.Path) != f.Path {
+				if f.Category == catDrift && spuriousDrift(f.Rule, f.Path) {
 					delete(loaded, key)
 					dropped++
 				}
 			}
 			if dropped > 0 {
-				logf("dropped %d drift findings keyed by random ids", dropped)
+				logf("dropped %d spurious drift findings (random-id keys / content-dependent paths)", dropped)
 			}
 			*findings = loaded
 		}
@@ -355,7 +355,7 @@ func safeName(id string) string {
 func pruneDynamicFindings(sum *summary) bool {
 	kept := sum.Findings[:0:0]
 	for _, f := range sum.Findings {
-		if f.Category == catDrift && normalizePath(f.Path) != f.Path {
+		if f.Category == catDrift && spuriousDrift(f.Rule, f.Path) {
 			continue
 		}
 		kept = append(kept, f)

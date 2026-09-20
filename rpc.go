@@ -17,7 +17,7 @@ const (
 	pluginID = "cpa-inspector"
 	// schemaVersion 取 6：流式分片不再重复携带请求体/历史分片，management JSON 响应不做 HTML 转义。
 	schemaVersion = 6
-	pluginVersion = "0.1.5"
+	pluginVersion = "0.1.6"
 	repoURL       = "https://github.com/hxfeng1998/cpa-inspector"
 
 	methodPluginRegister          = "plugin.register"

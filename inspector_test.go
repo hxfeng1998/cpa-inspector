@@ -608,3 +608,37 @@ func TestMigrateDynamicPaths(t *testing.T) {
 		t.Fatalf("bad prune: %+v", sum)
 	}
 }
+
+// 以 ID 为键的映射条目（items.{ctco_*}）取决于对话里有没有工具调用结果：即使此前每次都出现，
+// 某次请求没有它也不是"必现字段缺失"。
+func TestContentDependentPathsAreNeverReportedMissing(t *testing.T) {
+	s := newSchemaStore()
+	now := time.Now()
+	with, _ := decodeJSON([]byte(`{"id":"x","usage":{"attribution":{"items":{"ctco_0e24489f5f3399be016aafffdb978c87d0a37071d8ce0cf580":{"cached_tokens":1,"content":[1]}}}}}`))
+	without, _ := decodeJSON([]byte(`{"id":"x","usage":{"attribution":{"items":{}}}}`))
+	for i := 0; i < 8; i++ { // 学习期 3，之后该模型已"观测充分"，且 {ctco_*} 出现率 100%
+		s.observe("scope", "m", fmt.Sprint("r", i), extractShape(with), 3, now)
+	}
+	if ev := s.observe("scope", "m", "first-turn", extractShape(without), 3, now); len(ev) != 0 {
+		t.Fatalf("a request without tool outputs must not report missing fields: %+v", ev)
+	}
+	noID, _ := decodeJSON([]byte(`{"usage":{"attribution":{"items":{}}}}`)) // 真正必现的普通字段缺失仍然要报
+	ev := s.observe("scope", "m", "no-id", extractShape(noID), 3, now)
+	if len(ev) != 1 || ev[0].Kind != "missing_field" || ev[0].Path != "id" {
+		t.Fatalf("ordinary always-present fields must still be reported: %+v", ev)
+	}
+	for _, c := range []struct {
+		rule, path string
+		want       bool
+	}{
+		{"missing_field", "response.usage.attribution.items.{ctco_*}.cached_tokens", true},
+		{"new_field_for_model", "response.usage.attribution.items.{rs_*}", true},
+		{"new_field", "response.usage.attribution.items.rs_0e24489f5f3399be016aafffdb963887d09c0e60005aad4f9b", true},
+		{"new_field", "response.usage.attribution.items.{ctco_*}", false}, // 映射里出现新的条目类别，是真信号
+		{"missing_field", "response.usage.input_tokens", false},
+	} {
+		if got := spuriousDrift(c.rule, c.path); got != c.want {
+			t.Errorf("spuriousDrift(%s, %s) = %v, want %v", c.rule, c.path, got, c.want)
+		}
+	}
+}

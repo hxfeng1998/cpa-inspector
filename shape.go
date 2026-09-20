@@ -360,7 +360,7 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 			if f.Types[e.Type] == 0 && !learning && !newPaths[e.Path] && e.Type != "null" && !onlyNull(f.Types) {
 				events = append(events, driftEvent{Kind: "type_change", Scope: scope, Path: e.Path, Type: e.Type, Example: e.Example, Model: model, Prior: joinKeys(f.Types)})
 			}
-			if model != "" && !counted[e.Path] && f.Models[model] == 0 && modelMature && othersMature && othersObs > 0 {
+			if model != "" && !counted[e.Path] && f.Models[model] == 0 && modelMature && othersMature && othersObs > 0 && !strings.Contains(e.Path, "{") {
 				if othersCount := f.Count - f.Models[model]; float64(othersCount) >= 0.9*float64(othersObs) {
 					events = append(events, driftEvent{Kind: "new_field_for_model", Scope: scope, Path: e.Path, Type: e.Type, Example: e.Example, Model: model})
 				}
@@ -383,7 +383,7 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 
 	if model != "" && modelMature && checkMissing && modelSeen > 0 {
 		for path, f := range sc.Fields {
-			if counted[path] || strings.Contains(path, "[]") || strings.Contains(path, "=") {
+			if counted[path] || contentDependent(path) || strings.Contains(path, "=") {
 				continue
 			}
 			if float64(f.Models[model]) >= 0.95*float64(modelSeen) {
@@ -398,6 +398,21 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 		sc.Models[model]++
 	}
 	return collapseDrift(events, newPaths)
+}
+
+// contentDependent 报告路径是否取决于对话内容：数组元素（content[]…）与以 ID 为键的映射条目（items.{ctco_*}…）。
+// 它们出现与否由对话里有没有对应的块 / 工具调用决定，不能拿"出现率"判断缺失。
+func contentDependent(path string) bool {
+	return strings.Contains(path, "[]") || strings.Contains(path, "{")
+}
+
+// spuriousDrift 识别旧版本产生的、现在看来不成立的漂移发现项（用于启动时清理）：
+// 按随机 ID 展开的"新字段"，以及对内容相关路径报的"必现字段缺失 / 某模型新增字段"。
+func spuriousDrift(rule, path string) bool {
+	if normalizePath(path) != path {
+		return true
+	}
+	return (rule == "missing_field" || rule == "new_field_for_model") && contentDependent(path)
 }
 
 // collapseDrift 丢弃"祖先路径在同一次观测里也是新路径"的 new_field/new_enum 事件。
