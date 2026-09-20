@@ -67,10 +67,19 @@ Body 可以在 结构化（可折叠 JSON 树，基线之外的字段高亮）/ 
 
 **直接下载**（推荐）：到 [Releases](https://github.com/hxfeng1998/cpa-inspector/releases) 下载对应架构的压缩包并解压，得到 `cpa-inspector.so`。
 
-| 文件 | 适用 |
+| 文件 | 适用 | |
+|---|---|---|
+| `cpa-inspector-linux-`**`amd64`**`.tar.gz` | x86-64（Intel / AMD）处理器 | **绝大多数 VPS 和 PC 选这个** |
+| `cpa-inspector-linux-`**`arm64`**`.tar.gz` | ARM 处理器：甲骨文 Ampere 免费机、AWS Graviton、树莓派（64 位系统） | 只有明确知道是 ARM 机器才选 |
+
+两个名字只差一个字母，下载前在服务器上执行 `uname -m` 确认：
+
+| `uname -m` 输出 | 下载 |
 |---|---|
-| `cpa-inspector-linux-amd64.tar.gz` | x86-64 服务器 |
-| `cpa-inspector-linux-arm64.tar.gz` | ARM 服务器（如甲骨文 Ampere、树莓派 64 位） |
+| `x86_64` | **amd64** |
+| `aarch64` | **arm64** |
+
+下错了不会损坏任何东西，只是 CPA 加载不了，启动日志里不会出现 `plugin loaded`。
 
 `vX.Y.Z` 是固定版本；`latest` 是 main 分支最新一次自动构建。产物在与 CPA 官方镜像相同的 debian bookworm（glibc 2.36）上编译，可用 `SHA256SUMS` 校验。
 
@@ -290,7 +299,7 @@ bash traffic.sh
 
 ### 自动构建与发版
 
-`.github/workflows/build.yml` **只在 `main` 分支有推送时运行**（仅改文档不触发）；功能分支、PR、tag 都不会触发，合并进 main 之后才构建。每次运行会跑测试、编译 amd64 与 arm64 两个产物，然后：
+`.github/workflows/build.yml` **只在 `main` 分支有推送时运行**（仅改文档不触发）；功能分支、PR、tag 都不会触发，合并进 main 之后才构建。每次运行会跑测试，编译两个产物——`amd64`（x86-64，常用）和 `arm64`（ARM），然后：
 
 - 覆盖滚动预发布 `latest`；
 - 如果 `rpc.go` 里的 `pluginVersion` 对应的 `vX.Y.Z` 发布还不存在，就创建它（之后不再改动）。
