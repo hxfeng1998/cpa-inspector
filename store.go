@@ -94,6 +94,11 @@ func (st *store) loadIndex() {
 		if json.Unmarshal(raw, &item.summary) != nil || item.ID == "" {
 			continue
 		}
+		if pruneDynamicFindings(&item.summary) {
+			if fixed, err := json.Marshal(item.summary); err == nil {
+				_ = writeFileAtomic(filepath.Join(st.dir, "records", name), fixed)
+			}
+		}
 		item.size = sizes[item.file]
 		st.list = append(st.list, item)
 		st.byID[item.ID] = item
@@ -285,12 +290,25 @@ func (st *store) loadState(schema *schemaStore, findings *map[string]*aggFinding
 					}
 				}
 			}
+			if n := loaded.migrateDynamicPaths(); n > 0 {
+				logf("migrated %d schema fields that were expanded per random id", n)
+			}
 			*schema = *loaded
 		}
 	}
 	if raw, err := os.ReadFile(filepath.Join(st.dir, "findings.json")); err == nil {
 		loaded := make(map[string]*aggFinding)
 		if json.Unmarshal(raw, &loaded) == nil {
+			dropped := 0
+			for key, f := range loaded { // 同上：按随机 ID 报出来的"新字段"不是真漂移
+				if f.Category == catDrift && normalizePath(f.Path) != f.Path {
+					delete(loaded, key)
+					dropped++
+				}
+			}
+			if dropped > 0 {
+				logf("dropped %d drift findings keyed by random ids", dropped)
+			}
 			*findings = loaded
 		}
 	}
@@ -331,4 +349,26 @@ func safeName(id string) string {
 		return "unknown"
 	}
 	return truncate(sb.String(), 64)
+}
+
+// pruneDynamicFindings 去掉摘要里"按随机 ID 报出的新字段"，并重算级别。返回是否有改动。
+func pruneDynamicFindings(sum *summary) bool {
+	kept := sum.Findings[:0:0]
+	for _, f := range sum.Findings {
+		if f.Category == catDrift && normalizePath(f.Path) != f.Path {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if len(kept) == len(sum.Findings) {
+		return false
+	}
+	sum.Findings, sum.Severity, sum.SeverityCounts = kept, "", make(map[string]int)
+	for _, f := range kept {
+		sum.SeverityCounts[f.Severity]++
+		if severityRank[f.Severity] > severityRank[sum.Severity] {
+			sum.Severity = f.Severity
+		}
+	}
+	return true
 }

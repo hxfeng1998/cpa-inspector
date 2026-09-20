@@ -547,3 +547,64 @@ func TestStickyHeaderDroppedFollowsHostPassthrough(t *testing.T) {
 		t.Fatalf("a foreign config.yaml must be unknown, got %s", got)
 	}
 }
+
+// 以 ID 为键的映射（usage.attribution.items.rs_0e24…）不能被当成字段：否则每个请求都会报一批"新字段"。
+func TestDynamicIDKeysAreCollapsed(t *testing.T) {
+	for key, want := range map[string]string{
+		"rs_0e24489f5f3399be016aafffdb963887d09c0e60005aad4f9b":   "{rs_*}",
+		"ctco_0e24489f5f3399be016aafffdb978c87d0a37071d8ce0cf580": "{ctco_*}",
+		"at_098dab76-fe15-5c6f-b01d-dcf3e5f08a0e":                 "{at_*}",
+		"098dab76-fe15-5c6f-b01d-dcf3e5f08a0e":                    "{*}",
+		"msg_01XFDUDYJgAACzvnptvVoYEL":                            "{msg_*}",
+		"42":                                                      "{#}",
+		// 正常字段名必须原样保留
+		"cache_creation_input_tokens": "cache_creation_input_tokens", "ephemeral_5m_input_tokens": "ephemeral_5m_input_tokens",
+		"input_tokens_details": "input_tokens_details", "parallel_tool_calls": "parallel_tool_calls", "id": "id", "x-codex-turn-state": "x-codex-turn-state",
+		"internationalizationsettings": "internationalizationsettings",
+	} {
+		if got := collapseDynamicKey(key); got != want {
+			t.Errorf("collapseDynamicKey(%q) = %q, want %q", key, got, want)
+		}
+	}
+
+	s := newSchemaStore()
+	now := time.Now()
+	doc := func(i int) []shapeEntry {
+		v, _ := decodeJSON([]byte(fmt.Sprintf(`{"usage":{"attribution":{"items":{"rs_%048x":{"input_tokens":1,"cached_tokens":0},"ctco_%048x":{"input_tokens":2}}}}}`, i, i+1000)))
+		return extractShape(v)
+	}
+	for i := 0; i < 12; i++ { // 学习期 3 个请求，之后每个请求的 ID 键都是新的
+		if ev := s.observe("scope", "m", fmt.Sprint("r", i), doc(i), 3, now); len(ev) != 0 {
+			t.Fatalf("random id keys must not produce drift (request %d): %+v", i, ev)
+		}
+	}
+	if _, ok := s.Scopes["scope"].Fields["usage.attribution.items.{rs_*}.input_tokens"]; !ok {
+		t.Fatalf("collapsed path missing: %v", s.Scopes["scope"].Fields)
+	}
+}
+
+// 旧数据迁移：已按随机 ID 展开的基线字段要并入折叠路径，对应的漂移发现项要清掉。
+func TestMigrateDynamicPaths(t *testing.T) {
+	s := newSchemaStore()
+	now := time.Now()
+	sc := &scopeStat{Observations: 10, Models: map[string]int{"m": 10}, ModelRequests: map[string]int{}, Fields: map[string]*fieldStat{}}
+	s.Scopes["scope"] = sc
+	for i := 0; i < 4; i++ {
+		sc.Fields[fmt.Sprintf("response.usage.attribution.items.rs_%048x", i)] = &fieldStat{Types: map[string]int{"object": 1}, Models: map[string]int{"m": 1}, Count: 1, FirstSeen: now, LastSeen: now}
+	}
+	sc.Fields["response.usage.input_tokens"] = &fieldStat{Types: map[string]int{"number": 10}, Models: map[string]int{"m": 10}, Count: 10, Baseline: true}
+	if n := s.migrateDynamicPaths(); n != 4 {
+		t.Fatalf("want 4 merged, got %d", n)
+	}
+	f := sc.Fields["response.usage.attribution.items.{rs_*}"]
+	if len(sc.Fields) != 2 || f == nil || !f.Baseline || f.Count != 4 {
+		t.Fatalf("bad merge result: %d fields, merged=%+v", len(sc.Fields), f)
+	}
+	sum := summary{Findings: []finding{
+		{Category: catDrift, Severity: sevNotice, Path: "response.usage.attribution.items.rs_0e24489f5f3399be016aafffdb963887d09c0e60005aad4f9b"},
+		{Category: catSecurity, Severity: sevWarn, Rule: "request-rewritten", Path: "instructions"},
+	}, Severity: sevWarn}
+	if !pruneDynamicFindings(&sum) || len(sum.Findings) != 1 || sum.Findings[0].Rule != "request-rewritten" || sum.SeverityCounts[sevNotice] != 0 || sum.Severity != sevWarn {
+		t.Fatalf("bad prune: %+v", sum)
+	}
+}

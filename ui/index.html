@@ -564,6 +564,13 @@ function recordsTable(data) {
 /* ---------- JSON 树 ---------- */
 const OPAQUE = new Set(["input_schema", "parameters", "input", "arguments", "args", "properties", "schema", "json_schema"]);
 function disc(v) { if (v && typeof v === "object" && !Array.isArray(v)) for (const k of ["type", "role"]) if (typeof v[k] === "string" && /^[A-Za-z0-9_.:\-/]{1,48}$/.test(v[k])) return "<" + v[k] + ">"; return ""; }
+// 动态键折叠：与后端 collapseDynamicKey 一致（以 ID 为键的映射不算字段）。
+function dynKey(k) {
+  if (/^[0-9]+$/.test(k)) return "{#}";
+  let m = /^([A-Za-z]{1,8}[_-])?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.exec(k) || /^([A-Za-z]{1,8}[_-])?[0-9a-fA-F]{16,}$/.exec(k);
+  if (!m) { m = /^([A-Za-z]{1,8}[_-])[A-Za-z0-9]{20,}$/.exec(k); if (m && (k.slice(m[1].length).match(/[0-9]/g) || []).length < 2) m = null; }
+  return m ? "{" + (m[1] || "") + "*}" : k;
+}
 function typeDisc(v) { return v && typeof v === "object" && !Array.isArray(v) && typeof v.type === "string" && /^[A-Za-z0-9_.:\-/]{1,48}$/.test(v.type) ? "<" + v.type + ">" : ""; }
 function jsonTree(value, flagged, open) { const root = h("div", { class: "jt" }); root.append(jnode(null, value, "", flagged || new Set(), open ?? 2, true)); return root; }
 function jnode(key, v, path, flagged, open, last) {
@@ -583,7 +590,7 @@ function jnode(key, v, path, flagged, open, last) {
   let built = false, expanded = false;
   const build = () => { built = true; const LIMIT = 200;
     const add = (from) => { entries.slice(from, from + LIMIT).forEach(([k, child], i) => {
-      const cp = isArr ? path + "[]" + disc(child) : (path ? path + "." + k : k) + typeDisc(child); // 与后端 shape.go 的路径规则保持一致
+      const seg = isArr ? "" : dynKey(String(k)); const cp = isArr ? path + "[]" + disc(child) : (path ? path + "." + seg : seg) + typeDisc(child); // 与后端 shape.go 的路径规则保持一致
       kids.append(jnode(isArr ? null : k, child, cp, OPAQUE.has(k) ? new Set() : flagged, open - 1, from + i === entries.length - 1)); });
       if (from + LIMIT < entries.length) { const more = h("div", { class: "more" }, `…还有 ${entries.length - from - LIMIT} 项`); more.onclick = () => { more.remove(); add(from + LIMIT); }; kids.append(more); } };
     add(0); };

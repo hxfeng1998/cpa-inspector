@@ -197,7 +197,7 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 
 ## 字段漂移是怎么判定的
 
-1. **形态提取**：把每份 JSON 展开成"路径 → 类型"。数组折叠为 `[]`；带 `type` / `role` 的多态对象按判别值分路径（`content[]<tool_use>.name`、`delta<text_delta>.text`），不同变体的字段互不干扰；判别类字段的取值记为伪路径（`stop_reason=end_turn`），用于发现新枚举值；工具入参、JSON Schema 这类用户数据子树不下钻。
+1. **形态提取**：把每份 JSON 展开成"路径 → 类型"。数组折叠为 `[]`；带 `type` / `role` 的多态对象按判别值分路径（`content[]<tool_use>.name`、`delta<text_delta>.text`），不同变体的字段互不干扰；判别类字段的取值记为伪路径（`stop_reason=end_turn`），用于发现新枚举值；工具入参、JSON Schema 这类用户数据子树不下钻。以 ID 为键的映射（如 `usage.attribution.items.rs_0e24…`，键每次请求都不同）折叠成通配并保留有语义的前缀（`items.{rs_*}`、`{at_*}`、纯数字 `{#}`），否则每个请求都会冒出一批"新字段"。
 2. **作用域**：`方向 | 协议 | 事件类型`，例如 `upstream_response | claude | message_start`。经协议翻译得到的下游响应与直通的原生响应分开建基线（`claude←openai`）。
 3. **学习期**：每个作用域的前 `learn_samples` 个**请求**（不是事件——一个流有上百个事件）全部并入基线。
 4. **之后报告**：

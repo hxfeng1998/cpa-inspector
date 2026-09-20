@@ -96,9 +96,10 @@ func (w *shapeWalker) walk(v any, path string, depth int) {
 			return
 		}
 		for key, child := range t {
-			childPath := key
+			segment := collapseDynamicKey(key)
+			childPath := segment
 			if path != "" {
-				childPath = path + "." + key
+				childPath = path + "." + segment
 			}
 			if opaqueKeys[key] {
 				w.add(childPath, "opaque:"+jsonKind(child), "")
@@ -111,6 +112,98 @@ func (w *shapeWalker) walk(v any, path string, depth int) {
 			w.walk(child, childPath+typeDiscriminator(child), depth+1)
 		}
 	}
+}
+
+// 动态键：有些对象是"以 ID 为键的映射"（如 usage.attribution.items.rs_0e24…），键每次请求都不同。
+// 把它们当字段会让每个请求都冒出一批"新字段"。这里把 ID 形态的键折叠成通配，并保留有语义的前缀：
+// rs_0e24489f… → {rs_*}，at_098dab76-fe15-… → {at_*}，纯数字 → {#}。
+var (
+	dynUUID  = regexp.MustCompile(`^([A-Za-z]{1,8}[_-])?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	dynHex   = regexp.MustCompile(`^([A-Za-z]{1,8}[_-])?[0-9a-fA-F]{16,}$`)
+	dynToken = regexp.MustCompile(`^([A-Za-z]{1,8}[_-])[A-Za-z0-9]{20,}$`)
+	dynDigit = regexp.MustCompile(`^[0-9]+$`)
+)
+
+func collapseDynamicKey(key string) string {
+	if len(key) < 1 || len(key) > 200 {
+		return key
+	}
+	if dynDigit.MatchString(key) {
+		return "{#}"
+	}
+	for _, re := range []*regexp.Regexp{dynUUID, dynHex, dynToken} {
+		m := re.FindStringSubmatch(key)
+		if m == nil {
+			continue
+		}
+		if re == dynToken && countDigits(key[len(m[1]):]) < 2 { // 纯字母的长单词不是 ID
+			continue
+		}
+		return "{" + m[1] + "*}"
+	}
+	return key
+}
+
+func countDigits(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			n++
+		}
+	}
+	return n
+}
+
+// normalizePath 把一条已落盘的路径按当前的动态键规则重新折叠（用于迁移旧数据）。
+func normalizePath(path string) string {
+	segments := strings.Split(path, ".")
+	for i, seg := range segments {
+		cut := strings.IndexAny(seg, "[<=")
+		if cut < 0 {
+			cut = len(seg)
+		}
+		segments[i] = collapseDynamicKey(seg[:cut]) + seg[cut:]
+	}
+	return strings.Join(segments, ".")
+}
+
+// migrateDynamicPaths 把旧基线里按随机 ID 展开的字段并入折叠后的路径，返回被合并的条数。
+func (s *schemaStore) migrateDynamicPaths() int {
+	merged := 0
+	for _, sc := range s.Scopes {
+		for path, f := range sc.Fields {
+			norm := normalizePath(path)
+			if norm == path {
+				continue
+			}
+			merged++
+			delete(sc.Fields, path)
+			dst := sc.Fields[norm]
+			if dst == nil {
+				f.Baseline, f.Acked = true, false // 这些本就不是漂移，直接视为基线
+				sc.Fields[norm] = f
+				continue
+			}
+			dst.Baseline = true
+			dst.Count = min(sc.Observations, dst.Count+f.Count)
+			for typ, n := range f.Types {
+				dst.Types[typ] += n
+			}
+			for model, n := range f.Models {
+				dst.Models[model] = min(sc.Models[model], dst.Models[model]+n)
+			}
+			if f.FirstSeen.Before(dst.FirstSeen) {
+				dst.FirstSeen, dst.FirstReqID = f.FirstSeen, f.FirstReqID
+			}
+			if f.LastSeen.After(dst.LastSeen) {
+				dst.LastSeen, dst.LastReqID = f.LastSeen, f.LastReqID
+			}
+		}
+	}
+	if merged > 0 {
+		s.dirty = true
+	}
+	return merged
 }
 
 func discriminator(item any) string {

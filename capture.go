@@ -211,6 +211,7 @@ func configureInspector(cfg config) {
 		done:     make(chan struct{}),
 	}
 	ins.store.loadState(ins.schema, &ins.findings)
+	ins.findDirty = true // 迁移可能清掉了旧发现项：下一次落盘时写回
 	go ins.loop()
 	global = ins
 	logf("ready: data_dir=%s capture_upstream=%v records=%d", cfg.DataDir, cfg.CaptureUpstream, ins.store.count())
