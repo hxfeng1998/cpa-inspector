@@ -293,7 +293,7 @@ const ICONS = {
 };
 const SEV_LABEL = { critical: "严重", warn: "警告", notice: "留意", info: "备查", ok: "正常" };
 const CAT_LABEL = { security: "渠道安全", privacy: "隐私外泄", integrity: "协议完整性", drift: "字段漂移" };
-const DIR_LABEL = { client_request: "客户端请求", upstream_request: "发往上游的请求", upstream_response: "上游原始响应", downstream_response: "返回客户端的响应", upstream_headers: "上游响应头", upstream_ws: "上游 WebSocket 事件" };
+const DIR_LABEL = { client_request: "客户端请求", upstream_request: "发往上游的请求", upstream_response: "上游原始响应", downstream_response: "返回客户端的响应", upstream_headers: "上游响应头", upstream_ws: "上游 WebSocket 事件", upstream_fingerprint: "后端指纹（按渠道）" };
 function sev(level, text) {
   const svg = s("svg", { viewBox: "0 0 12 12", "aria-hidden": "true" }, s("path", { d: ICONS[level] || ICONS.info, fill: "currentColor", "fill-rule": "evenodd" }));
   return h("span", { class: "sev " + level }, svg, text ?? SEV_LABEL[level] ?? level);
@@ -776,7 +776,7 @@ async function viewSchema(sink) {
   if (!data.scopes.some((x) => x.scope === state.scope)) state.scope = (data.scopes.find(driftOf) || data.scopes.find((x) => x.direction === "upstream_response") || data.scopes[0]).scope;
   const cur = data.scopes.find((x) => x.scope === state.scope);
   const side = h("div", { class: "card scopes", "data-keep-scroll": "scopes" });
-  for (const dir of ["upstream_response", "upstream_ws", "downstream_response", "upstream_request", "client_request", "upstream_headers"]) {
+  for (const dir of ["upstream_response", "upstream_ws", "upstream_fingerprint", "downstream_response", "upstream_request", "client_request", "upstream_headers"]) {
     const group = data.scopes.filter((x) => x.direction === dir); if (!group.length) continue;
     side.append(h("h3", {}, DIR_LABEL[dir]));
     for (const sc of group) { const d = driftOf(sc); side.append(h("button", { "aria-current": String(sc.scope === state.scope), title: sc.scope, onclick: () => { state.scope = sc.scope; refresh(false); } }, h("span", { class: "nm mono" }, sc.format + (sc.event ? " · " + sc.event : "")), d ? h("span", { class: "tag new" }, "+" + d) : null, h("span", { class: "muted num", style: "font-size:12px" }, compact(sc.observations)))); }

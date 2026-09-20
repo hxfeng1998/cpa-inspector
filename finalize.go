@@ -156,6 +156,16 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 	if upShape != nil {
 		ins.mergeShape(rec, scopeKey(scopeUpstreamRequest, orUnknown(firstNonEmpty(rec.upFormat, s.ToFormat)), ""), upShape, now)
 	}
+	// 后端指纹按渠道建基线：用上游原文；同协议直通时下游即上游原文。
+	var origin *message
+	if up != nil {
+		origin = up.Message
+	} else if down != nil && s.ToFormat == s.SourceFormat {
+		origin = down.Message
+	}
+	if entries := fingerprintEntries(origin); len(entries) > 0 && succeeded {
+		ins.mergeShape(rec, scopeKey(scopeFingerprint, orUnknown(origin.Format), firstNonEmpty(s.Channel, s.Provider, "(unknown)")), entries, now)
+	}
 	if ins.schema.observeModel(rec.schemaModel(), now) && ins.store.count() >= cfg.LearnSamples {
 		f := base
 		f.Severity, f.Category, f.Rule = sevInfo, catDrift, "new-model"

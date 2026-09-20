@@ -328,21 +328,19 @@ func checkToolCalls(side string, msg *message, declared map[string]bool, hasTool
 
 // ---------- 规则：Claude 协议指纹 ----------
 
+// claudeMsgID 是历史上官方后端的消息 ID 形态。注意这只是经验：官方格式可能调整，
+// 不少中转（one-api / new-api 等）也会重写 ID，所以单凭它不能判定后端真假。
 var claudeMsgID = regexp.MustCompile(`^msg_(?:01[A-Za-z0-9]{20,}|bdrk_[A-Za-z0-9]+|vrtx_[A-Za-z0-9]+)$`)
 
-// claudeProvenance 依据消息 ID 形态推断后端来源。
+// claudeProvenance 依据消息 ID 前缀给出来源标签；认不出就不贴标签（不下"非官方"这种结论）。
 func claudeProvenance(id string) string {
 	switch {
 	case strings.HasPrefix(id, "msg_bdrk_"):
 		return "AWS Bedrock"
 	case strings.HasPrefix(id, "msg_vrtx_"):
 		return "Google Vertex"
-	case strings.HasPrefix(id, "msg_01"):
-		return "Anthropic 直连形态"
-	case id == "":
-		return ""
 	}
-	return "非官方形态"
+	return ""
 }
 
 func checkClaudeFingerprint(msg *message, base finding) []finding {
@@ -350,17 +348,10 @@ func checkClaudeFingerprint(msg *message, base finding) []finding {
 		return nil
 	}
 	var out []finding
-	if msg.ID != "" && !claudeMsgID.MatchString(msg.ID) {
-		f := base
-		f.Severity, f.Category, f.Rule = sevWarn, catSecurity, "claude-id-format"
-		f.Title = "Claude 消息 ID 形态异常"
-		f.Detail = "官方后端的 ID 形如 msg_01…（直连）、msg_bdrk_…（Bedrock）、msg_vrtx_…（Vertex）。其它形态通常意味着渠道用别的协议/模型转换而来。"
-		f.Evidence = truncate(msg.ID, 80)
-		f.Key = findingKey(f.Rule, idShape(msg.ID), base.Channel)
-		out = append(out, f)
-	}
+	unsigned := false
 	for _, b := range msg.Blocks {
 		if b.Type == "thinking" && b.SignatureLen == 0 && b.Text != "" {
+			unsigned = true
 			f := base
 			f.Severity, f.Category, f.Rule = sevWarn, catSecurity, "thinking-no-signature"
 			f.Title = "thinking 块缺少 signature"
@@ -370,26 +361,57 @@ func checkClaudeFingerprint(msg *message, base finding) []finding {
 			break
 		}
 	}
+	if msg.ID != "" && !claudeMsgID.MatchString(msg.ID) {
+		f := base
+		f.Category, f.Rule = catSecurity, "claude-id-format"
+		// ID 本身是弱证据：只有和"thinking 无签名"同时出现才值得警告，否则仅备查。
+		f.Severity = sevInfo
+		if unsigned {
+			f.Severity = sevWarn
+		}
+		f.Title = "Claude 消息 ID 不是 msg_01… 形态"
+		f.Detail = "历史上官方后端的 ID 形如 msg_01…（直连）、msg_bdrk_…（Bedrock）、msg_vrtx_…（Vertex）。中转常会重写 ID，官方格式也可能调整，单凭这一点不能说明后端不是 Claude，请结合 thinking 签名与 usage 字段判断。该渠道的 ID 形态日后若发生变化，会另以漂移报告。"
+		f.Evidence = truncate(msg.ID, 80)
+		f.Key = findingKey(f.Rule, idForm(msg.ID), base.Channel)
+		out = append(out, f)
+	}
 	return out
 }
 
-// idShape 把 ID 概括成形态（字母→a，数字→0），用于聚合。
-func idShape(id string) string {
-	var sb strings.Builder
-	var last rune
-	for _, r := range id {
-		switch {
-		case r >= '0' && r <= '9':
-			r = '0'
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
-			r = 'a'
-		}
-		if r != last || (r != '0' && r != 'a') {
-			sb.WriteRune(r)
-		}
-		last = r
+var idPrefix = regexp.MustCompile(`^(?:[a-z]+[_-])+`)
+
+// idForm 把 ID 概括成稳定的形态：字母前缀 + 是否以 01 开头 + 随机段长度，如 "msg_01…(22)"、"msg_…(24)"、"chatcmpl-…(29)"。
+func idForm(id string) string {
+	prefix := idPrefix.FindString(id)
+	tail, mark := id[len(prefix):], "…"
+	if strings.HasPrefix(tail, "01") {
+		mark = "01…"
 	}
-	return truncate(sb.String(), 40)
+	return fmt.Sprintf("%s%s(%d)", prefix, mark, len(tail))
+}
+
+// fingerprintEntries 提取"后端指纹"，按渠道并入字段图谱：形态一旦变化（换后端、开始/停止重写 ID、
+// thinking 签名从有到无）就会以漂移报告。这比写死"官方应该长什么样"可靠。
+func fingerprintEntries(msg *message) []shapeEntry {
+	if msg == nil || msg.Error != "" {
+		return nil
+	}
+	var out []shapeEntry
+	if msg.ID != "" {
+		form := idForm(msg.ID)
+		out = append(out, shapeEntry{Path: "id_form=" + form, Type: "enum", Example: truncate(msg.ID, 48)})
+	}
+	for _, b := range msg.Blocks {
+		if b.Type == "thinking" && b.Text != "" {
+			state := "present"
+			if b.SignatureLen == 0 {
+				state = "absent"
+			}
+			out = append(out, shapeEntry{Path: "thinking_signature=" + state, Type: "enum", Example: state})
+			break
+		}
+	}
+	return out
 }
 
 // ---------- 规则：输入 token 虚高 ----------

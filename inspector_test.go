@@ -227,7 +227,7 @@ func TestCleanFlowHasNoSecurityFindings(t *testing.T) {
 	}
 	ins := currentInspector()
 	sum, rawDetail, _ := ins.store.load("r1")
-	if sum.Channel != "relay.example.net" || sum.Usage == nil || sum.Usage.OutputTokens != 34 || sum.ResponseModel != "claude-sonnet-4-5-20250929" || sum.Provenance == "" {
+	if sum.Channel != "relay.example.net" || sum.Usage == nil || sum.Usage.OutputTokens != 34 || sum.ResponseModel != "claude-sonnet-4-5-20250929" || sum.Provenance != "" { // msg_01 前缀不再被贴上来源标签：那是无法核实的断言
 		t.Fatalf("summary not enriched: %+v", sum)
 	}
 	var det detail
@@ -456,5 +456,45 @@ func TestAPIResponsesAreDeterministic(t *testing.T) {
 				t.Fatalf("%s is not deterministic across identical calls", p)
 			}
 		}
+	}
+}
+
+// 真 Claude 特征齐全（thinking 带签名）时，非 msg_01 的 ID 只是备查；与"无签名"同时出现才是警告。
+func TestClaudeIDFormatIsWeakEvidence(t *testing.T) {
+	signed := newMessage()
+	signed.Format, signed.ID = fmtClaude, "msg_WQExtUL0rWhIyDjWNBuaUJJb"
+	signed.Blocks = []*block{{Type: "thinking", Text: "hmm", SignatureLen: 1024}, {Type: "text", Text: "hi"}}
+	got := checkClaudeFingerprint(signed, finding{})
+	if len(got) != 1 || got[0].Rule != "claude-id-format" || got[0].Severity != sevInfo {
+		t.Fatalf("signed thinking + odd id must be info only: %+v", got)
+	}
+	signed.Blocks[0].SignatureLen = 0
+	sev := map[string]string{}
+	for _, f := range checkClaudeFingerprint(signed, finding{}) {
+		sev[f.Rule] = f.Severity
+	}
+	if sev["claude-id-format"] != sevWarn || sev["thinking-no-signature"] != sevWarn {
+		t.Fatalf("unsigned thinking + odd id must both warn: %v", sev)
+	}
+	for id, want := range map[string]string{"msg_01AbCdEfGhIjKlMnOpQrStUv": "msg_01…(24)", "msg_WQExtUL0rWhIyDjWNBuaUJJb": "msg_…(24)", "msg_bdrk_01Xy": "msg_bdrk_01…(4)", "chatcmpl-9f8e7d6c": "chatcmpl-…(8)"} {
+		if got := idForm(id); got != want {
+			t.Errorf("idForm(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// 同一渠道的 ID 形态在学习期之后发生变化（换后端 / 开始重写 ID）必须以漂移报告。
+func TestBackendFingerprintDriftPerChannel(t *testing.T) {
+	setup(t, "")
+	for i := 0; i < 3; i++ {
+		runClaudeFlow(t, flow{id: fmt.Sprint("fp", i), model: "claude-sonnet-4-5", clientReq: cleanReq,
+			upstreamLines: claudeStream("msg_01AbCdEfGhIjKlMnOpQrStUv", "claude-sonnet-4-5", "", textBlock(0, "ok")...)})
+		currentInspector().finalizeDue(true)
+	}
+	runClaudeFlow(t, flow{id: "fpchanged", model: "claude-sonnet-4-5", clientReq: cleanReq,
+		upstreamLines: claudeStream("msg_WQExtUL0rWhIyDjWNBuaUJJb", "claude-sonnet-4-5", "", textBlock(0, "ok")...)})
+	f, ok := findingRules(t, "fpchanged")["new_enum"]
+	if !ok || !strings.HasPrefix(f.Scope, scopeFingerprint+"|") || !strings.Contains(f.Path, "id_form=msg_…(24)") {
+		t.Fatalf("id form change on a channel must be reported as drift: %+v", findingRules(t, "fpchanged"))
 	}
 }

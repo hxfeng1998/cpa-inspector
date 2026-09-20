@@ -20,6 +20,7 @@ const (
 	scopeDownstreamResponse = "downstream_response"
 	scopeUpstreamHeaders    = "upstream_headers"
 	scopeUpstreamWS         = "upstream_ws"
+	scopeFingerprint        = "upstream_fingerprint"
 
 	finalizeGrace   = 2 * time.Second  // 等 usage.handle 等迟到事件
 	abandonAfter    = 20 * time.Minute // 在途请求无任何活动多久后强制落盘
@@ -681,6 +682,7 @@ func (ins *inspector) report(rec *record, f finding) {
 		ins.findings[f.Key] = agg
 	}
 	agg.Count++
+	agg.Severity, agg.Title, agg.Detail = f.Severity, f.Title, f.Detail // 以最新一次为准：规则调整后旧聚合项随之更新
 	agg.LastSeen = f.Time
 	agg.RequestID = f.RequestID
 	if f.Channel != "" {
