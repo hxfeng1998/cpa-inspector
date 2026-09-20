@@ -21,6 +21,7 @@
 - [性能开销](#性能开销)
 - [常见问题](#常见问题)
 - [开发](#开发)
+- [许可证](#许可证)
 
 ## 功能一览
 
@@ -62,9 +63,18 @@ Body 可以在 结构化（可折叠 JSON 树，基线之外的字段高亮）/ 
 - CPA 版本需带动态库插件系统（本插件在 v7.3.9 上开发与验证），且为 **CGO 构建**。官方 Docker 镜像满足；自行编译需 `CGO_ENABLED=1`。
 - 已设置 `remote-management.secret-key`（留空会关闭整个 Management API，界面取不到数据）。
 
-### 1. 构建
+### 1. 获取插件
 
-需要 Go 1.26+ 与 gcc。
+**直接下载**（推荐）：到 [Releases](https://github.com/hxfeng1998/cpa-inspector/releases) 下载对应架构的压缩包并解压，得到 `cpa-inspector.so`。
+
+| 文件 | 适用 |
+|---|---|
+| `cpa-inspector-linux-amd64.tar.gz` | x86-64 服务器 |
+| `cpa-inspector-linux-arm64.tar.gz` | ARM 服务器（如甲骨文 Ampere、树莓派 64 位） |
+
+`vX.Y.Z` 是固定版本；`latest` 是 main 分支最新一次自动构建。产物在与 CPA 官方镜像相同的 debian bookworm（glibc 2.36）上编译，可用 `SHA256SUMS` 校验。
+
+**或者自行构建**，需要 Go 1.26+ 与 gcc：
 
 ```bash
 git clone https://github.com/hxfeng1998/cpa-inspector.git && cd cpa-inspector
@@ -277,3 +287,16 @@ bash traffic.sh
 | `security.go` | 安全规则、脱敏 |
 | `store.go` | 磁盘持久化与保留策略 |
 | `api.go` / `ui/index.html` | Management API 与内嵌界面（单文件，无构建步骤、无外部依赖） |
+
+### 自动构建与发版
+
+`.github/workflows/build.yml` **只在 `main` 分支有推送时运行**（仅改文档不触发）；功能分支、PR、tag 都不会触发，合并进 main 之后才构建。每次运行会跑测试、编译 amd64 与 arm64 两个产物，然后：
+
+- 覆盖滚动预发布 `latest`；
+- 如果 `rpc.go` 里的 `pluginVersion` 对应的 `vX.Y.Z` 发布还不存在，就创建它（之后不再改动）。
+
+所以发版的方式是：修改 `pluginVersion`，合入 main。
+
+## 许可证
+
+[MIT](LICENSE)
