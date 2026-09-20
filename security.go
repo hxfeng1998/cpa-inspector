@@ -401,6 +401,13 @@ func fingerprintEntries(msg *message) []shapeEntry {
 		form := idForm(msg.ID)
 		out = append(out, shapeEntry{Path: "id_form=" + form, Type: "enum", Example: truncate(msg.ID, 48)})
 	}
+	if msg.Echo != nil { // 渠道注入的系统提示词也是后端指纹：换了一份就以漂移报告
+		form := "none"
+		if msg.Echo.InstructionsSHA != "" {
+			form = fmt.Sprintf("%s(%d)", msg.Echo.InstructionsSHA, msg.Echo.InstructionsLen)
+		}
+		out = append(out, shapeEntry{Path: "echo_instructions=" + form, Type: "enum", Example: truncate(msg.Echo.InstructionsHead, 96)})
+	}
 	for _, b := range msg.Blocks {
 		if b.Type == "thinking" && b.Text != "" {
 			state := "present"

@@ -99,6 +99,9 @@ type message struct {
 	Done        bool           `json:"done"`
 	Error       string         `json:"error,omitempty"`
 	Issues      []string       `json:"issues,omitempty"`
+	Echo        *requestEcho   `json:"echo,omitempty"`       // 上游回显的实际生效请求参数（Responses 协议）
+	EchoDiff    []echoDiff     `json:"echo_diff,omitempty"`  // 回显与发出请求的差异
+	EchoBasis   string         `json:"echo_basis,omitempty"` // 比对基准：upstream（CPA 实际发往上游的请求体）| client
 
 	claudeBlocks map[int]*block // content_block index → block
 	chatTools    map[string]*block
@@ -497,6 +500,9 @@ func (m *message) respItem(obj map[string]any, typ string) *block {
 
 // absorbResponseObject 以终态 response 对象为准重建内容（比增量拼接可靠）。
 func (m *message) absorbResponseObject(resp map[string]any) {
+	if echo := captureEcho(resp); echo != nil {
+		m.Echo = echo
+	}
 	if s, ok := resp["id"].(string); ok && s != "" {
 		m.ID = s
 	}

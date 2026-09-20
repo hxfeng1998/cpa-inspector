@@ -700,6 +700,7 @@ async function openRecord(id) {
       section("状态", "", startLine(status), h("div", { class: "kv", style: "margin-top:12px" }, kv("协议", cap.format || m.format), kv("消息 ID", m.id, true), kv("自报模型", m.model, true), kv("结束原因", m.stop_reason), kv("分片 / 字节", cap.chunks + " / " + bytes(cap.bytes)), kv("首片 / 末片", ms(cap.first_ms) + " / " + ms(cap.last_ms)), kv("完整结束", m.done ? "是" : "否")),
         (m.issues || []).length ? h("div", { class: "chips", style: "margin-top:12px" }, m.issues.map((x) => sev("warn", x))) : null),
       section("Headers", headers ? Object.keys(headers).length + " 项" : "", headersTable(headers, headersNote)),
+      echoSection(m),
       m.usage || m.extra ? section("usage 与指纹字段", "取自响应体原文", m.usage ? jsonTree(m.usage, flaggedFor(dir), 3) : null, m.extra ? jsonTree(m.extra, null, 2) : null) : null,
       section("Body", bytes(cap.bytes) + (cap.truncated ? " · 超出保存上限的事件未保存" : "") + (flaggedFor(dir).size ? " · 高亮项为基线之外的字段" : ""), switcher(views)),
     ];
@@ -771,6 +772,19 @@ function deliveredHeaders(de, su) {
   if (mode === "off") return section("Headers", "未下发上游响应头", h("p", { style: "margin:0 0 12px" }, sev("notice", "未透传"), " CPA 的 ", h("span", { class: "mono" }, "passthrough-headers"), " 为关闭（默认值）：下面这些上游响应头", h("b", {}, "没有"), "发给客户端，客户端只收到 CPA 自己的基础头。需要客户端拿到它们（例如 Codex 的 ", h("span", { class: "mono" }, "X-Codex-Turn-State"), "），在 config.yaml 里设置 ", h("span", { class: "mono" }, "passthrough-headers: true"), "。"), raw);
   if (mode === "on") { const sent = Object.fromEntries(Object.entries(seen || {}).filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))); return section("Headers", Object.keys(sent).length + " 项 · passthrough-headers 已开启", h("p", { class: "muted", style: "margin:0 0 12px" }, "CPA 会过滤逐跳头与已知网关标识头后下发；下表为按逐跳规则估算的结果。"), headersTable(sent), h("div", { style: "margin-top:12px" }, raw)); }
   return section("Headers", "是否下发：未知", h("p", { class: "muted", style: "margin:0 0 12px" }, "这是插件拦截点看到的上游响应头原文。CPA 只有在 passthrough-headers: true 时才会把它们下发给客户端；插件没能读到 CPA 的 config.yaml，无法确定当前设置。"), raw);
+}
+// 上游回显的实际生效参数（Responses 协议）。与发出的请求不一致的项逐条列出：这是渠道改写请求的直接证据。
+function echoSection(m) {
+  const e = m.echo; if (!e) return null;
+  const diffs = m.echo_diff || [];
+  const rows = diffs.map((d) => h("div", { class: "finding" }, sev(d.severity), h("div", { class: "t mono" }, d.param), h("span", {}),
+    d.note ? h("div", { class: "d" }, d.note) : null,
+    h("div", { class: "e mono" }, "发出：" + d.sent + "\n回显：" + d.echoed)));
+  const ins = e.instructions_len ? h("details", { style: "margin-top:12px" }, h("summary", { style: "cursor:pointer;color:var(--ink-2)" }, `回显的 instructions 开头（共 ${nf.format(e.instructions_len)} 字符，sha ${e.instructions_sha}）`), h("pre", { class: "raw rawbox", style: "margin-top:8px" }, e.instructions_head)) : null;
+  const basis = m.echo_basis === "client" ? "比对基准：客户端请求（未抓到 CPA 发往上游的请求体，CPA 自身的改写无法排除）" : "比对基准：CPA 实际发往上游的请求体（见「② 发往上游」），CPA 自己做的改写不会算到渠道头上";
+  return section("上游回显的生效参数", (diffs.length ? diffs.length + " 项与发出的请求不一致" : "与发出的请求一致") + " · " + basis,
+    diffs.length ? h("div", { style: "margin-bottom:6px" }, rows) : h("p", { class: "muted", style: "margin:0 0 12px" }, sev("ok", "一致"), " 上游回显的 instructions、tools 与关键参数都和发出的请求相同，没有被渠道改写的迹象。"),
+    h("div", { class: "kv" }, kv("instructions", e.instructions_len ? nf.format(e.instructions_len) + " 字符" : "（无）"), kv("tools", (e.tools || []).join(", ") || "（无）", true), kv("parallel_tool_calls", e.parallel_tool_calls == null ? "–" : String(e.parallel_tool_calls)), kv("reasoning.effort", e.reasoning_effort), kv("text.verbosity", e.verbosity), kv("service_tier", e.service_tier), kv("max_output_tokens", e.max_output_tokens == null ? "（未限制）" : e.max_output_tokens)), ins);
 }
 function kv(label, value, mono) { return h("div", {}, h("small", {}, label), h("span", { class: mono ? "mono" : "", style: "overflow-wrap:anywhere" }, value == null || value === "" ? "–" : value)); }
 function eventList(events, flaggedFor) {

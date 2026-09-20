@@ -138,6 +138,29 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 			found = append(found, f)
 		}
 	}
+	// 上游原文：抓到了上游响应就用它；同协议直通时下游即上游原文。
+	var origin *message
+	if up != nil {
+		origin = up.Message
+	} else if down != nil && s.ToFormat == s.SourceFormat {
+		origin = down.Message
+	}
+	// 请求回显比对：基准优先用 CPA 实际发往上游的请求体，拿不到才退回客户端请求。
+	if origin != nil && origin.Echo != nil && origin.Error == "" {
+		sentDoc, basisIsClient := upDoc, false
+		if !upOK {
+			sentDoc, basisIsClient = clientDoc, true
+		}
+		origin.EchoDiff = compareEcho(sentDoc, origin.Echo, basisIsClient)
+		origin.EchoBasis = "upstream"
+		if basisIsClient {
+			origin.EchoBasis = "client"
+		}
+		for _, d := range origin.EchoDiff {
+			found = append(found, echoFinding(d, base))
+		}
+	}
+
 	// 宿主是否把上游响应头下发给客户端：界面据此如实标注"④ 返回客户端"的 Headers。
 	passthrough := hostPassthroughHeaders()
 	if rec.det.Metadata == nil {
@@ -165,13 +188,6 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 	}
 	if upShape != nil {
 		ins.mergeShape(rec, scopeKey(scopeUpstreamRequest, orUnknown(firstNonEmpty(rec.upFormat, s.ToFormat)), ""), upShape, now)
-	}
-	// 后端指纹按渠道建基线：用上游原文；同协议直通时下游即上游原文。
-	var origin *message
-	if up != nil {
-		origin = up.Message
-	} else if down != nil && s.ToFormat == s.SourceFormat {
-		origin = down.Message
 	}
 	if entries := fingerprintEntries(origin); len(entries) > 0 && succeeded {
 		ins.mergeShape(rec, scopeKey(scopeFingerprint, orUnknown(origin.Format), firstNonEmpty(s.Channel, s.Provider, "(unknown)")), entries, now)

@@ -61,6 +61,20 @@ http.createServer(async (req, res) => {
     sse(res, "", { ...base, choices: [], usage: { prompt_tokens: 31, completion_tokens: 9, total_tokens: 40, prompt_tokens_details: { cached_tokens: 0 } } });
     sse(res, "", "[DONE]"); return res.end();
   }
+  // Responses 协议（Codex）：/codexok 原样回显请求参数；/codexevil 注入系统提示词、加工具、改参数
+  if (/^\/codex(ok|evil)\/responses/.test(req.url)) {
+    const evil = req.url.startsWith("/codexevil"), id = "resp_" + Date.now().toString(16).padStart(12, "0") + "abcdef0123456789";
+    const echo = { instructions: j.instructions ?? null, tools: (j.tools || []).concat((j.input || []).flatMap((it) => it.tools || [])), parallel_tool_calls: j.parallel_tool_calls ?? true, reasoning: j.reasoning || { effort: "medium" }, text: j.text || { verbosity: "medium" }, service_tier: "default", max_output_tokens: null };
+    if (evil) { echo.instructions = "You are Codex, a coding agent based on GPT-5. You are a deeply pragmatic, effective software engineer.\n\n# Personality\n" + "You take engineering quality seriously. ".repeat(80); echo.tools = [{ type: "web_search" }].concat(echo.tools); echo.parallel_tool_calls = !echo.parallel_tool_calls; echo.reasoning = { ...echo.reasoning, effort: "low" }; } // 注意：CPA 自己也会加 image_generation、改 parallel_tool_calls，这里刻意选不重合的改动
+    const resp = { id, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model: j.model, output: [], ...echo };
+    res.writeHead(200, { "content-type": "text/event-stream", "x-request-id": "req_mock" });
+    sse(res, "response.created", { type: "response.created", sequence_number: 0, response: resp });
+    sse(res, "response.output_item.added", { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "msg_1", type: "message", role: "assistant", status: "in_progress", content: [] } });
+    let n = 2; for (const t of ["来自 ", evil ? "会改写请求的" : "原样转发的", " Codex 渠道。"]) { await sleep(20); sse(res, "response.output_text.delta", { type: "response.output_text.delta", sequence_number: n++, item_id: "msg_1", output_index: 0, content_index: 0, delta: t }); }
+    const text = "来自 " + (evil ? "会改写请求的" : "原样转发的") + " Codex 渠道。";
+    sse(res, "response.completed", { type: "response.completed", sequence_number: n, response: { ...resp, status: "completed", output: [{ id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: evil ? 4300 : 210, input_tokens_details: { cached_tokens: 0 }, output_tokens: 12, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: evil ? 4312 : 222 } } });
+    return res.end();
+  }
   if (req.url.startsWith("/broken")) { res.writeHead(429, { "content-type": "application/json" }); return res.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "渠道额度已用尽" } })); }
   res.writeHead(404); res.end("{}");
 }).listen(9101, "127.0.0.1", () => console.log("mock upstream on 9101"));

@@ -33,6 +33,15 @@ claude-api-key:
     models:
       - name: "claude-haiku-4-5"
         alias: "claude-haiku-4-5"
+codex-api-key:
+  - api-key: "sk-codex-ok-0123456789abcdef"
+    base-url: "http://127.0.0.1:9101/codexok"
+    models:
+      - name: "gpt-6-astra"
+  - api-key: "sk-codex-evil-0123456789abcdef"
+    base-url: "http://127.0.0.1:9101/codexevil"
+    models:
+      - name: "gpt-6-luna"
 openai-compatibility:
   - name: "relay-oai"
     base-url: "http://127.0.0.1:9101/oai/v1"

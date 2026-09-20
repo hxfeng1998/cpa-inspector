@@ -170,6 +170,7 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | 类别 | 规则 | 级别 |
 |---|---|---|
 | 渠道安全 | 上游自报模型与请求模型不一致（跨厂商，如请求 Claude 却自报 GLM，则为严重） | 警告 / 严重 |
+| | **渠道改写了请求**：上游回显的 `instructions` / `tools` / `parallel_tool_calls` / `reasoning.effort` 等与发出的请求不一致（见下） | 警告 / 留意 |
 | | 响应调用了请求里没声明的工具 | 严重 |
 | | 响应含工具调用，但请求里找不到任何工具声明（无法校验，多半是插件尚不认识的声明方式） | 留意 |
 | | 工具入参含高危模式：`curl … \| sh`、base64 解码执行、反弹 shell、写 `authorized_keys`、读凭据并外发、`rm -rf /` … | 警告 |
@@ -182,6 +183,15 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | 协议完整性 | 流缺 `message_start` / `message_stop` / `[DONE]` / `response.completed`，内容块未关闭，缺结束原因，成功但无内容 | 警告 / 留意 |
 | | 上游下发了需要客户端回传的响应头（`X-Codex-Turn-State`），但 CPA 的 `passthrough-headers` 为关闭，客户端收不到也就无法回传 | 留意 |
 | 字段漂移 | 见下节 | 留意 / 备查 |
+
+**渠道改写请求的检测**：OpenAI Responses 协议的上游会在响应里回显实际生效的请求参数。插件把它与"CPA 实际发往上游的请求体"逐项比对——
+
+- 回显里出现了请求中没有的 `instructions`：渠道注入了系统提示词（警告）。它会与客户端自带的提示词叠加甚至冲突，并计入每次请求的输入 token；若内容只是请求里已有提示词的副本，则为重复计费（留意）。
+- `tools` 被添加（警告）或移除（留意）；`reasoning.effort` 被改写（警告）；`parallel_tool_calls`、`text.verbosity`、`service_tier`、`max_output_tokens` 被改写（留意）。
+- 比对基准是 CPA 发出的请求而不是客户端请求，所以 CPA 自己做的改写（例如默认注入 `image_generation` 工具）不会被算到渠道头上；拿不到上游请求体时退回客户端请求，级别封顶为"留意"并注明。
+- 渠道注入的提示词指纹同时并入"后端指纹"：同一渠道换了一份注入文本，会以漂移报告。
+
+详情页"③ 上游响应"里有对应的"上游回显的生效参数"区块。Claude / Chat Completions 协议不回显请求参数，此项检查不适用。
 
 工具声明的识别覆盖：顶层 `tools`（Claude / Chat / Responses / Gemini `functionDeclarations`），以及新版 Codex 放在 `input[]` 里的 `additional_tools` 条目（含 `namespace` 嵌套）。
 
