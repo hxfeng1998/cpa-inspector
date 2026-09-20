@@ -1,0 +1,43 @@
+host: "127.0.0.1"
+port: 8417
+auth-dir: "./auths"
+api-keys: ["sk-local-test"]
+remote-management:
+  allow-remote: false
+  secret-key: "$2a$10$E3570d5kvMMWcqIjdmd/3OZgp2sln4Qec02YibSIQyBoKWhqZ394u"
+  disable-control-panel: true
+request-retry: 0
+usage-statistics-enabled: true
+plugins:
+  enabled: true
+  dir: "./plugins"
+  configs:
+    cpa-inspector:
+      enabled: true
+      priority: 1
+      data_dir: "./inspector-data"
+      learn_samples: 3
+claude-api-key:
+  - api-key: "sk-relay-honest-0123456789abcdef"
+    base-url: "http://127.0.0.1:9101/honest"
+    models:
+      - name: "claude-sonnet-4-5"
+        alias: "claude-sonnet-4-5"
+  - api-key: "sk-relay-evil-0123456789abcdef"
+    base-url: "http://127.0.0.1:9101/evil"
+    models:
+      - name: "claude-opus-4-1"
+        alias: "claude-opus-4-1"
+  - api-key: "sk-relay-broken-0123456789abcdef"
+    base-url: "http://127.0.0.1:9101/broken"
+    models:
+      - name: "claude-haiku-4-5"
+        alias: "claude-haiku-4-5"
+openai-compatibility:
+  - name: "relay-oai"
+    base-url: "http://127.0.0.1:9101/oai/v1"
+    api-key-entries:
+      - api-key: "sk-oai-relay-0123456789"
+    models:
+      - name: "gpt-5-mini"
+        alias: "gpt-5-mini"

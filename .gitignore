@@ -1,0 +1,7 @@
+dist/
+plugins-data/
+dev/plugins/
+dev/auths/
+dev/inspector-data/
+dev/*.log
+dev/cli-proxy-api

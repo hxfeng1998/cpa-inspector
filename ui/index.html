@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPA Inspector</title>
+<style>
+:root { /* white：与 CPA 管理面板的 white 主题一致。嵌入面板时这些表面/文字色会被面板实际生效的变量覆盖 */
+  color-scheme: light;
+  --page: #ffffff; --surface: #ffffff; --raised: #ffffff; --sunken: #f6f6f6;
+  --ink: #2d2a26; --ink-2: #6d6760; --muted: #a29c95;
+  --hair: #e5e5e5; --axis: #d9d9d9; --ring: rgba(45,42,38,.12);
+  --series-1: #2a78d6; --series-2: #eb6834; --accent: #2a78d6; --accent-wash: rgba(42,120,214,.10);
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-text: #006300;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --j-key: #184f95; --j-str: #006300; --j-num: #a3420f; --j-lit: #4a3aa7;
+}
+:root[data-theme="light"] { /* 面板默认的暖米色外观 */
+  --page: #f0eee8; --surface: #faf9f5; --raised: #faf9f5; --sunken: #e9e6df;
+  --hair: #e3e1db; --axis: #d5d2cb;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #1d1b18; --surface: #151412; --raised: #262320; --sunken: #262320;
+  --ink: #f6f4f1; --ink-2: #c9c3bb; --muted: #9c958d;
+  --hair: #3a3530; --axis: #4a453f; --ring: rgba(255,255,255,.12);
+  --series-1: #3987e5; --series-2: #d95926; --accent: #3987e5; --accent-wash: rgba(57,135,229,.18);
+  --good-text: #0ca30c;
+  --j-key: #86b6ef; --j-str: #6fc98f; --j-num: #eda57c; --j-lit: #b3abf2;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+button, input, select { font: inherit; color: inherit; }
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+h2 { font-size: 20px; } h3 { font-size: 13px; color: var(--ink-2); font-weight: 600; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); } .sub { color: var(--ink-2); }
+.num { font-variant-numeric: tabular-nums; }
+
+.app { display: grid; grid-template-columns: 208px minmax(0,1fr); min-height: 100%; }
+.nav { position: sticky; top: 0; height: 100vh; padding: 20px 12px; border-right: 1px solid var(--hair); display: flex; flex-direction: column; gap: 2px; }
+.brand { padding: 4px 10px 18px; }
+.brand b { display: block; font-size: 15px; letter-spacing: -.01em; }
+.brand span { font-size: 12px; color: var(--muted); }
+.nav button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink-2); }
+.nav button:hover { background: var(--sunken); }
+.nav button[aria-current="page"] { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+.nav button:focus-visible, .btn:focus-visible, .row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav .count { margin-left: auto; font-size: 11.5px; padding: 0 7px; border-radius: 99px; background: var(--sunken); color: var(--ink-2); }
+.nav .count.hot { background: var(--critical); color: #fff; }
+.nav .foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--muted); display: grid; gap: 8px; }
+.live { display: inline-flex; align-items: center; gap: 6px; }
+.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.live.off i { background: var(--muted); }
+main { padding: 28px 32px 64px; min-width: 0; }
+.head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.head p { margin: 0; color: var(--ink-2); }
+.head .sp { flex: 1; }
+
+.card { background: var(--surface); border: 1px solid var(--hair); border-radius: 12px; }
+.card > header { display: flex; align-items: center; gap: 10px; padding: 14px 18px 0; }
+.card > .body { padding: 14px 18px 18px; }
+.grid { display: grid; gap: 16px; }
+.tiles { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 16px; }
+.tile { padding: 16px 18px; }
+.tile .label { color: var(--ink-2); font-size: 13px; }
+.tile .value { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; }
+.tile.hero .value { font-size: 48px; }
+.tile .note { font-size: 12.5px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.two { grid-template-columns: minmax(0,3fr) minmax(0,2fr); align-items: start; }
+@media (max-width: 1100px) { .two { grid-template-columns: minmax(0,1fr); } }
+
+.btn { border: 1px solid var(--hair); background: var(--raised); border-radius: 8px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--axis); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); padding: 4px 8px; }
+.btn.ghost:hover { background: var(--sunken); }
+.btn.danger { color: var(--critical); }
+.btn.sm { padding: 2px 9px; font-size: 12.5px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+.filters input, .filters select, .field { border: 1px solid var(--hair); background: var(--raised); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.filters input[type=search] { flex: 1 1 240px; }
+.seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; background: var(--raised); }
+.seg button { all: unset; cursor: pointer; padding: 5px 12px; color: var(--ink-2); font-size: 13px; }
+.seg button[aria-pressed=true] { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--hair); white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+td { padding: 9px 12px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+tr.row { cursor: pointer; }
+tr.row:hover td { background: var(--sunken); }
+td.r, th.r { text-align: right; }
+.tablewrap { overflow: auto; border-radius: 12px; }
+.tablewrap.viewport { max-height: calc(100vh - 210px); min-height: 240px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.tablewrap.pinfirst th:first-child, .tablewrap.pinfirst td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: min(300px, 40vw); max-width: min(460px, 46vw); box-shadow: 1px 0 0 var(--hair); }
+.tablewrap.pinfirst th:first-child { z-index: 3; }
+.tablewrap.pinfirst th { z-index: 2; }
+.tablewrap.pinfirst td:first-child .path { overflow-wrap: anywhere; }
+.tablewrap::-webkit-scrollbar { height: 12px; width: 12px; }
+.tablewrap::-webkit-scrollbar-thumb { background: var(--axis); border-radius: 6px; border: 3px solid var(--surface); }
+.tablewrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arrow { color: var(--muted); padding: 0 4px; }
+
+.sev { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 1px 8px 1px 6px; border-radius: 99px; border: 1px solid var(--ring); white-space: nowrap; color: var(--ink); }
+.sev svg { width: 11px; height: 11px; flex: none; }
+.sev.critical svg { color: var(--critical); } .sev.warn svg { color: var(--warning); }
+.sev.notice svg { color: var(--accent); } .sev.info svg { color: var(--muted); } .sev.ok svg { color: var(--good); }
+.sev.critical { background: color-mix(in srgb, var(--critical) 12%, transparent); }
+.sev.warn { background: color-mix(in srgb, var(--warning) 16%, transparent); }
+.tag { display: inline-block; font-size: 11.5px; padding: 0 7px; border-radius: 5px; background: var(--sunken); color: var(--ink-2); white-space: nowrap; }
+.tag.new { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.finding { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 4px 12px; padding: 12px 0; border-bottom: 1px solid var(--hair); align-items: start; }
+.finding:last-child { border-bottom: 0; }
+.finding .t { font-weight: 600; }
+.finding .d { color: var(--ink-2); font-size: 13px; grid-column: 2; }
+.finding .e { grid-column: 2; background: var(--sunken); border-radius: 6px; padding: 5px 9px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.finding .m { grid-column: 2; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+.finding.acked { opacity: .55; }
+.empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+
+/* chart */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-2); margin-left: auto; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.tip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; box-shadow: 0 6px 24px rgba(0,0,0,.14); min-width: 130px; z-index: 5; }
+.tip .k { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-2); }
+.tip .k b { color: var(--ink); } .tip .k i { display: inline-block; width: 10px; height: 2px; margin-right: 6px; vertical-align: middle; }
+.meter { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--series-1) 18%, transparent); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--series-1); border-radius: 3px; }
+
+/* drawer */
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.36); z-index: 20; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(1080px, 96vw); background: var(--page); z-index: 21; overflow: auto; border-left: 1px solid var(--hair); box-shadow: -12px 0 48px rgba(0,0,0,.18); }
+.drawer .top { position: sticky; top: 0; z-index: 3; background: var(--page); padding: 18px 28px 0; border-bottom: 1px solid var(--hair); }
+.drawer .content { padding: 20px 28px 60px; }
+.tabs { display: flex; gap: 2px; margin-top: 14px; overflow-x: auto; }
+.tabs button { all: unset; cursor: pointer; padding: 8px 12px; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs button[aria-selected=true] { color: var(--ink); font-weight: 600; border-color: var(--accent); }
+.flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.flow .node { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; padding: 5px 10px; }
+.flow .node small { display: block; color: var(--muted); font-size: 11px; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 20px; }
+.startline { background: var(--sunken); border-radius: 8px; padding: 8px 12px; overflow-wrap: anywhere; }
+table.hdr th { position: static; background: none; color: var(--ink-2); font-size: 12.5px; font-weight: 600; width: 1%; padding: 6px 16px 6px 0; vertical-align: top; border-bottom: 1px solid var(--hair); }
+table.hdr td { padding: 6px 0; overflow-wrap: anywhere; border-bottom: 1px solid var(--hair); }
+table.hdr tr:last-child th, table.hdr tr:last-child td { border-bottom: 0; }
+.rawbox { background: var(--sunken); border-radius: 8px; padding: 12px; max-height: 70vh; overflow: auto; }
+.card > header { flex-wrap: wrap; }
+.kv div small { display: block; color: var(--muted); font-size: 12px; }
+
+/* conversation */
+.msg { border: 1px solid var(--hair); border-radius: 10px; background: var(--surface); margin-bottom: 10px; overflow: hidden; }
+.msg > .who { display: flex; gap: 8px; align-items: center; padding: 7px 12px; font-size: 12px; color: var(--ink-2); border-bottom: 1px solid var(--hair); background: var(--sunken); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.msg.assistant > .who { background: var(--accent-wash); }
+.blk { padding: 10px 12px; border-bottom: 1px solid var(--hair); }
+.blk:last-child { border-bottom: 0; }
+.blk .bt { font-size: 11.5px; color: var(--muted); margin-bottom: 3px; display: flex; gap: 8px; align-items: center; }
+.blk pre, pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.55 var(--sans); }
+.blk.thinking pre { color: var(--ink-2); font-style: italic; }
+.blk.tool pre, pre.raw { font: 12.5px/1.5 var(--mono); }
+.blk.tool { background: var(--sunken); }
+
+/* json tree */
+.jt { font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
+.jt .n { padding-left: 16px; }
+.jt .tog { cursor: pointer; user-select: none; color: var(--muted); display: inline-block; width: 14px; margin-left: -14px; text-align: center; }
+.jt .k { color: var(--j-key); } .jt .s { color: var(--j-str); white-space: pre-wrap; } .jt .d { color: var(--j-num); } .jt .l { color: var(--j-lit); }
+.jt .c { color: var(--muted); }
+.jt .flag { background: var(--accent-wash); border-radius: 4px; outline: 1px solid var(--accent); }
+.jt .more { color: var(--accent); cursor: pointer; }
+.ev { border-bottom: 1px solid var(--hair); padding: 6px 0; display: grid; grid-template-columns: 64px 220px minmax(0,1fr); gap: 10px; align-items: start; }
+.ev .t { color: var(--muted); text-align: right; }
+
+/* schema */
+.atlas { display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .atlas { grid-template-columns: minmax(0,1fr); } }
+.scopes { max-height: calc(100vh - 140px); overflow: auto; padding: 8px; position: sticky; top: 16px; }
+.scopes h3 { padding: 10px 8px 4px; }
+.scopes button { all: unset; cursor: pointer; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 7px; width: calc(100% - 16px); }
+.scopes button:hover { background: var(--sunken); }
+.scopes button[aria-current=true] { background: var(--accent-wash); font-weight: 600; }
+.scopes .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.path .dim { color: var(--muted); }
+
+.gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.gate form { width: min(420px, 100%); padding: 28px; display: grid; gap: 14px; }
+.gate input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--hair); background: var(--raised); width: 100%; }
+.err { color: var(--critical); font-size: 13px; }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--page); padding: 8px 16px; border-radius: 99px; z-index: 50; font-size: 13px; }
+
+/* 嵌入 CPA 管理面板（iframe）时：面板已有侧边栏，这里改为顶部横向标签；并为面板右上角的浮动图标留位 */
+html.embedded .app { grid-template-columns: minmax(0,1fr); }
+html.embedded .nav { position: sticky; top: 0; z-index: 10; height: auto; flex-direction: row; align-items: center; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--hair); padding: 8px 220px 8px 20px; background: var(--page); min-height: 52px; }
+html.embedded .brand { display: none; }
+html.embedded .nav button { padding: 6px 12px; white-space: nowrap; }
+html.embedded .nav .count { margin-left: 6px; }
+html.embedded .nav .foot { margin: 0 0 0 auto; padding: 0 0 0 12px; display: flex; white-space: nowrap; }
+html.embedded main { padding: 20px 24px 48px; }
+html.embedded .scopes { top: 68px; max-height: calc(100vh - 100px); }
+html.embedded .tablewrap.viewport { max-height: calc(100vh - 262px); }
+html.embedded .drawer .top > div:first-child { padding-right: 210px; }
+@media (max-width: 820px) {
+  html.embedded .nav { padding-right: 16px; padding-top: 52px; }
+  html.embedded .nav .foot { display: none; }
+  .tablewrap.viewport { max-height: 70vh; }
+  .app { grid-template-columns: minmax(0,1fr); }
+  .nav { position: static; height: auto; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--hair); padding: 8px 12px; }
+  .brand, .nav .foot { display: none; }
+  main { padding: 18px 16px 48px; }
+  .drawer .top, .drawer .content { padding-left: 16px; padding-right: 16px; }
+  .ev { grid-template-columns: 48px minmax(0,1fr); } .ev .body { grid-column: 1 / -1; }
+}
+</style>
+<script>
+/* 主题完全跟随 CPA 管理面板，本页不提供自己的开关。
+   - 嵌在面板里（同源 iframe）：读面板 <html data-theme> 以及它实际生效的 CSS 变量，颜色逐值一致；MutationObserver 实时跟随切换。
+   - 独立标签页打开：读面板持久化的 localStorage["cli-proxy-theme"]（auto / white / dark / 其它=默认暖色），storage 事件跟随。
+   - 都拿不到：跟随系统明暗。 */
+(function () {
+  var root = document.documentElement, PANEL_KEY = "cli-proxy-theme";
+  var MAP = { "--page": "--bg-primary", "--surface": "--bg-secondary", "--sunken": "--bg-tertiary", "--ink": "--text-primary", "--ink-2": "--text-secondary", "--muted": "--text-tertiary", "--hair": "--border-color", "--axis": "--border-primary" };
+  function panelDoc() { try { if (window.parent !== window && window.parent.document && window.parent.document.documentElement) return window.parent.document; } catch (e) {} return null; }
+  function systemDark() { return !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches); }
+  function named(attr) { return attr === "dark" ? "dark" : attr === "white" ? "white" : "light"; }
+  function apply() {
+    var pd = panelDoc(), name;
+    if (pd) name = named(pd.documentElement.getAttribute("data-theme"));
+    else {
+      var pref = "auto"; try { pref = (JSON.parse(localStorage.getItem(PANEL_KEY)) || {}).state.theme || "auto"; } catch (e) {}
+      name = pref === "auto" ? (systemDark() ? "dark" : "white") : named(pref);
+    }
+    root.setAttribute("data-theme", name);
+    var cs = pd ? pd.defaultView.getComputedStyle(pd.documentElement) : null;
+    for (var mine in MAP) {
+      var v = cs ? cs.getPropertyValue(MAP[mine]).trim() : "";
+      if (v) root.style.setProperty(mine, v); else root.style.removeProperty(mine);
+    }
+    if (cs && root.style.getPropertyValue("--surface")) root.style.setProperty("--raised", name === "dark" ? root.style.getPropertyValue("--sunken") : root.style.getPropertyValue("--surface")); else root.style.removeProperty("--raised");
+  }
+  if (window.parent !== window) root.classList.add("embedded");
+  apply();
+  var pd = panelDoc();
+  if (pd && window.MutationObserver) new MutationObserver(apply).observe(pd.documentElement, { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+  window.addEventListener("storage", function (e) { if (!e.key || e.key === PANEL_KEY) apply(); });
+  if (window.matchMedia) { var mq = matchMedia("(prefers-color-scheme: dark)"); (mq.addEventListener ? mq.addEventListener.bind(mq, "change") : mq.addListener.bind(mq))(apply); }
+  window.__applyPanelTheme = apply;
+})();
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+const API = "/v0/management/cpa-inspector";
+const KEY_STORE = "cpa-inspector-key";
+const $root = document.getElementById("root");
+
+/* ---------- DOM 助手：所有数据一律走 textContent，绝不拼接 innerHTML（响应内容不可信） ---------- */
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid == null || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const SVGNS = "http://www.w3.org/2000/svg";
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, v);
+  for (const kid of kids.flat()) if (kid != null) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+const ICONS = {
+  critical: "M6 0l6 6-6 6-6-6z", warn: "M6 .5l6 11H0z", notice: "M6 1a5 5 0 100 10A5 5 0 006 1z",
+  info: "M6 1a5 5 0 100 10A5 5 0 006 1zm0 2.2a2.8 2.8 0 110 5.6 2.8 2.8 0 010-5.6z", ok: "M1 6.5l3.2 3.2L11 2.6 9.8 1.5 4.2 7.4 2.2 5.3z",
+};
+const SEV_LABEL = { critical: "严重", warn: "警告", notice: "留意", info: "备查", ok: "正常" };
+const CAT_LABEL = { security: "渠道安全", privacy: "隐私外泄", integrity: "协议完整性", drift: "字段漂移" };
+const DIR_LABEL = { client_request: "客户端请求", upstream_request: "发往上游的请求", upstream_response: "上游原始响应", downstream_response: "返回客户端的响应", upstream_headers: "上游响应头", upstream_ws: "上游 WebSocket 事件" };
+function sev(level, text) {
+  const svg = s("svg", { viewBox: "0 0 12 12", "aria-hidden": "true" }, s("path", { d: ICONS[level] || ICONS.info, fill: "currentColor", "fill-rule": "evenodd" }));
+  return h("span", { class: "sev " + level }, svg, text ?? SEV_LABEL[level] ?? level);
+}
+const nf = new Intl.NumberFormat("zh-CN");
+function compact(n) {
+  if (n == null) return "–";
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if (Math.abs(n) >= 1e4) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + "K";
+  return nf.format(n);
+}
+function bytes(n) { if (!n) return "0"; if (n < 1024) return n + " B"; if (n < 1048576) return (n / 1024).toFixed(1) + " KB"; return (n / 1048576).toFixed(1) + " MB"; }
+function ms(n) { if (n == null || n <= 0) return "–"; return n < 1000 ? n + " ms" : (n / 1000).toFixed(n < 10000 ? 2 : 1) + " s"; }
+function when(t) {
+  if (!t || t.startsWith("0001")) return "–";
+  const d = new Date(t), diff = (Date.now() - d) / 1000;
+  if (diff < 60) return Math.max(0, Math.floor(diff)) + " 秒前";
+  if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
+  if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
+  return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) + " " + d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+function clock(t) { return t ? new Date(t).toLocaleString("zh-CN", { hour12: false }) : "–"; }
+function toast(text) { const el = h("div", { class: "toast", role: "status" }, text); document.body.append(el); setTimeout(() => el.remove(), 2200); }
+
+/* ---------- API ---------- */
+const state = { view: "overview", key: "", overview: null, auto: true, timer: null, filters: { q: "", model: "", channel: "", severity: "", outcome: "" }, scope: "", schemaFilter: { q: "", drift: false }, findFilter: { cat: "", open: true }, offset: 0 };
+try { state.key = localStorage.getItem(KEY_STORE) || ""; } catch (e) {}
+
+async function api(path, body, sink) { // sink：本次刷新自己的签名收集数组（不能用全局变量，两次刷新会并发）
+  const res = await fetch(API + path, {
+    method: body ? "POST" : "GET", cache: "no-store", redirect: "manual",
+    headers: Object.assign({ Authorization: "Bearer " + state.key }, body ? { "Content-Type": "application/json" } : {}),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  // Management API 前面若有访问网关（Cloudflare Access、Authelia 等），未登录时会被重定向到登录页。
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) { const e = new Error("Management API 被前置的访问网关重定向到了登录页（如 Cloudflare Access）。请先在本浏览器打开 " + location.origin + "/management.html 完成登录，再回到此页重试。"); e.auth = true; throw e; }
+  if (res.status === 401 || res.status === 403) { const e = new Error("管理密钥无效，或当前来源不允许访问 Management API（远程访问需开启 allow-remote-management）"); e.auth = true; throw e; }
+  if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 200));
+  const text = await res.text();
+  if (sink) sink.push(path + "\n" + text.replace(/"now":"[^"]*"/, ""));
+  const data = JSON.parse(text);
+  for (const k of ["records", "inflight", "findings", "scopes", "top_findings", "hours", "models", "channels"]) if (data && data[k] === null) data[k] = []; // 兜底：列表字段永不为 null
+  return data;
+}
+
+/* ---------- 登录 ---------- */
+function renderGate(message) {
+  clearInterval(state.timer);
+  const input = h("input", { type: "password", placeholder: "Management Key", autocomplete: "current-password", value: state.key, "aria-label": "Management Key" });
+  const err = h("div", { class: "err", role: "alert" }, message || "");
+  const form = h("form", { class: "card", onsubmit: async (ev) => {
+    ev.preventDefault(); state.key = input.value.trim(); err.textContent = "";
+    try { state.overview = await api("/overview"); try { localStorage.setItem(KEY_STORE, state.key); } catch (e) {} renderApp(); }
+    catch (e) { err.textContent = e.message; }
+  } },
+    h("div", {}, h("h2", {}, "CPA Inspector"), h("p", { class: "sub", style: "margin:6px 0 0" }, "请输入 CLIProxyAPI 的管理密钥（remote-management.secret-key）。密钥只保存在本浏览器，用于调用 Management API。")),
+    input, err, h("button", { class: "btn primary", type: "submit" }, "进入"));
+  $root.replaceChildren(h("div", { class: "gate" }, form));
+  input.focus();
+}
+
+/* ---------- 外壳 ---------- */
+const VIEWS = [["overview", "概览"], ["records", "请求"], ["findings", "发现"], ["schema", "字段图谱"], ["settings", "设置"]];
+let $main, $nav;
+function renderApp() {
+  $nav = h("nav", { class: "nav", "aria-label": "主导航" });
+  $main = h("main", {});
+  $root.replaceChildren(h("div", { class: "app" }, $nav, $main));
+  paintNav(); go(state.view);
+  clearInterval(state.timer);
+  state.timer = setInterval(() => { if (state.auto && !document.hidden && !document.querySelector(".drawer")) refresh(true); }, 5000);
+}
+function paintNav() {
+  const o = state.overview || {}, fc = o.finding_counts || {};
+  const hot = (fc.critical || 0) + (fc.warn || 0), open = hot + (fc.notice || 0) + (fc.info || 0);
+  $nav.replaceChildren(...[
+    h("div", { class: "brand" }, h("b", {}, "CPA Inspector"), h("span", {}, "v" + (o.version || "") + " · 请求与响应分析")),
+    VIEWS.map(([id, label]) => h("button", { "aria-current": state.view === id ? "page" : null, onclick: () => go(id) }, label,
+      id === "findings" && open ? h("span", { class: "count" + (hot ? " hot" : "") }, hot || open) : null,
+      id === "records" && o.inflight ? h("span", { class: "count" }, o.inflight + " 在途") : null)),
+    h("div", { class: "foot" },
+      h("label", { class: "live" + (state.auto ? "" : " off"), title: "点击暂停 / 恢复自动刷新", style: "cursor:pointer" }, h("i", {}), h("input", { type: "checkbox", checked: state.auto, style: "display:none", onchange: (e) => { state.auto = e.target.checked; paintNav(); } }), state.auto ? "自动刷新 · 5s" : "自动刷新已暂停"))].flat());
+}
+function go(view) { state.view = view; state.lastSig = ""; paintNav(); $main.replaceChildren(h("div", { class: "empty" }, "加载中…")); refresh(false); }
+async function refresh(quiet) {
+  // 刷新会并发：用户点击触发的刷新可能与 5 秒定时刷新重叠。每次刷新持有自己的代号与签名收集器；
+  // 任一 await 之后发现已被更新的刷新取代，就直接作废，不再触碰页面与共享状态。
+  if (quiet && state.refreshing) return;
+  const id = state.refreshId = (state.refreshId || 0) + 1, sink = [], stale = () => id !== state.refreshId;
+  state.refreshing = (state.refreshing || 0) + 1;
+  try {
+    const overview = await api("/overview", null, sink);
+    if (stale()) return;
+    state.overview = overview; paintNav();
+    const view = state.view, render = { overview: viewOverview, records: viewRecords, findings: viewFindings, schema: viewSchema, settings: viewSettings }[view];
+    if (quiet && document.activeElement && $main.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName)) return; // 用户正在输入筛选条件时不打断
+    const node = await render(sink);
+    if (stale() || state.view !== view) return;
+    const own = view === "overview" || view === "settings" ? sink : sink.filter((part) => !part.startsWith("/overview\n")); // 其它页面只看自己的数据
+    const sig = view + "\n" + own.join("\n");
+    if (quiet && sig === state.lastSig) { tickTimes(); return; } // 数据没变：不动 DOM，滚动、悬停、选区全部保持
+    state.lastSig = sig;
+    swapContent(node);
+  } catch (e) { if (stale()) return; if (e.auth) renderGate(e.message); else if (!quiet) $main.replaceChildren(h("div", { class: "empty err" }, e.message)); }
+  finally { state.refreshing--; }
+}
+// swapContent 替换主区域内容，同时保持各滚动容器（data-keep-scroll）与页面自身的滚动位置。
+function swapContent(node) {
+  const saved = {};
+  $main.querySelectorAll("[data-keep-scroll]").forEach((el) => { saved[el.dataset.keepScroll] = [el.scrollTop, el.scrollLeft]; });
+  const x = scrollX, y = scrollY;
+  $main.style.minHeight = $main.offsetHeight + "px"; // 锁住高度：替换瞬间页面不塌缩，外层滚动（含被嵌入 iframe 时）不会被钳到顶部
+  $main.replaceChildren(node);
+  $main.querySelectorAll("[data-keep-scroll]").forEach((el) => { const pos = saved[el.dataset.keepScroll]; if (pos) { el.scrollTop = pos[0]; el.scrollLeft = pos[1]; } });
+  scrollTo(x, y);
+  requestAnimationFrame(() => { $main.style.minHeight = ""; });
+}
+// 相对时间（"3 分钟前"）单独走表，不依赖重绘。
+function rel(t) { return h("span", { "data-ts": t || "", title: clock(t) }, when(t)); }
+function tickTimes() { document.querySelectorAll("[data-ts]").forEach((el) => { const v = when(el.dataset.ts); if (el.textContent !== v) el.textContent = v; }); }
+function head(title, desc, ...right) { return h("div", { class: "head" }, h("h2", {}, title), h("p", {}, desc), h("span", { class: "sp" }), ...right); }
+
+/* ---------- 概览 ---------- */
+function viewOverview() {
+  const o = state.overview, fc = o.finding_counts || {};
+  const tiles = h("div", { class: "grid tiles" },
+    h("div", { class: "card tile hero" }, h("div", { class: "label" }, "近 24 小时请求"), h("div", { class: "value" }, compact(o.records_24h)),
+      h("div", { class: "note" }, h("span", {}, "累计保存 " + nf.format(o.records)), h("span", {}, "在途 " + o.inflight))),
+    h("div", { class: "card tile" }, h("div", { class: "label" }, "待确认的安全发现"), h("div", { class: "value" }, nf.format((fc.critical || 0) + (fc.warn || 0))),
+      h("div", { class: "note" }, sev("critical", "严重 " + (fc.critical || 0)), sev("warn", "警告 " + (fc.warn || 0)))),
+    h("div", { class: "card tile" }, h("div", { class: "label" }, "基线之外的字段"), h("div", { class: "value" }, nf.format(o.drifted_fields)),
+      h("div", { class: "note" }, h("span", {}, "共 " + nf.format(o.fields) + " 个字段 · " + o.scopes + " 个作用域"), sev("notice", "待确认漂移 " + (fc.notice || 0)))),
+    h("div", { class: "card tile" }, h("div", { class: "label" }, "失败 / 取消的请求"), h("div", { class: "value" }, nf.format(o.failed)),
+      h("div", { class: "note" }, h("span", {}, "占比 " + (o.records ? (o.failed / o.records * 100).toFixed(1) : "0") + "%"), h("span", {}, "占用 " + bytes(o.storage.bytes) + (o.storage.memory_only ? "（仅内存）" : "")))));
+
+  const chart = h("section", { class: "card" }, h("header", {}, h("h3", {}, "每小时请求量"),
+    h("div", { class: "legend" }, h("span", {}, h("i", { style: "background:var(--series-1)" }), "无告警"), h("span", {}, h("i", { style: "background:var(--series-2)" }), "含警告及以上发现"))),
+    h("div", { class: "body" }, hourChart(o.hours || [])));
+
+  const top = h("section", { class: "card" }, h("header", {}, h("h3", {}, "最需要关注"), h("span", { class: "sp", style: "flex:1" }), h("button", { class: "btn ghost sm", onclick: () => go("findings") }, "全部发现 →")),
+    h("div", { class: "body" }, (o.top_findings || []).length ? o.top_findings.map((f) => findingRow(f, false)) : h("div", { class: "empty" }, "暂无待确认的发现项")));
+
+  return h("div", {}, head("概览", "经过代理的每一次模型调用都被记录、重组并与基线比对。"), tiles,
+    h("div", { class: "grid two", style: "margin-bottom:16px" }, chart, top),
+    h("div", { class: "grid two" }, groupTable("模型", o.models || [], "model"), groupTable("渠道", o.channels || [], "channel")));
+}
+
+function hourChart(hours) {
+  const W = 720, H = 200, padL = 34, padB = 22, padT = 8, plotW = W - padL - 4, plotH = H - padB - padT;
+  const peak = Math.max(1, ...hours.map((x) => x.requests));
+  const step = niceStep(peak), top = Math.ceil(peak / step) * step;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "近 24 小时每小时请求量柱状图" });
+  for (let v = 0; v <= top; v += step) {
+    const y = padT + plotH - (v / top) * plotH;
+    svg.append(s("line", { x1: padL, x2: W, y1: y, y2: y, stroke: v === 0 ? "var(--axis)" : "var(--hair)", "stroke-width": 1 }), s("text", { x: padL - 8, y: y + 4, "text-anchor": "end", class: "tick" }, compact(v)));
+  }
+  const band = plotW / Math.max(1, hours.length), bw = Math.min(18, band - 4);
+  const wrap = h("div", { class: "chart" }, svg), tip = h("div", { class: "tip", hidden: true });
+  wrap.append(tip);
+  hours.forEach((b, i) => {
+    const x = padL + i * band + (band - bw) / 2, base = padT + plotH;
+    const clean = b.requests - b.flagged, hClean = (clean / top) * plotH, hFlag = (b.flagged / top) * plotH;
+    const g = s("g", { tabindex: 0, role: "listitem", "aria-label": `${new Date(b.hour).getHours()} 时：${b.requests} 次请求，${b.flagged} 次含告警，${b.failed} 次失败` });
+    if (clean > 0) g.append(colPath(x, base - hClean, bw, hClean, hFlag > 0 ? 0 : 4, "var(--series-1)"));
+    if (b.flagged > 0) g.append(colPath(x, base - hClean - hFlag - (clean > 0 ? 2 : 0), bw, hFlag, 4, "var(--series-2)"));
+    g.append(s("rect", { x: padL + i * band, y: padT, width: band, height: plotH, fill: "transparent" }));
+    const show = () => {
+      tip.replaceChildren(h("div", { class: "muted" }, new Date(b.hour).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })),
+        h("div", { class: "k" }, h("span", {}, h("i", { style: "background:var(--series-1)" }), "无告警"), h("b", {}, clean)),
+        h("div", { class: "k" }, h("span", {}, h("i", { style: "background:var(--series-2)" }), "含告警"), h("b", {}, b.flagged)),
+        h("div", { class: "k" }, h("span", {}, "其中失败"), h("b", {}, b.failed)));
+      tip.hidden = false;
+      const left = (x + bw / 2) / W * wrap.clientWidth;
+      tip.style.left = Math.min(wrap.clientWidth - 150, Math.max(0, left - 70)) + "px"; tip.style.top = "0px";
+      g.style.opacity = ".8";
+    }, hide = () => { tip.hidden = true; g.style.opacity = ""; };
+    g.addEventListener("pointerenter", show); g.addEventListener("pointerleave", hide); g.addEventListener("focus", show); g.addEventListener("blur", hide);
+    svg.append(g);
+    if (i % 3 === 0) svg.append(s("text", { x: x + bw / 2, y: H - 6, "text-anchor": "middle", class: "tick" }, String(new Date(b.hour).getHours()).padStart(2, "0") + ":00"));
+  });
+  return wrap;
+}
+function niceStep(peak) { const raw = peak / 4, pow = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1)))); for (const m of [1, 2, 5, 10]) if (raw <= m * pow) return Math.max(1, m * pow); return Math.max(1, 10 * pow); }
+function colPath(x, y, w, hgt, r, fill) {
+  r = Math.min(r, hgt, w / 2);
+  return s("path", { fill, d: `M${x},${y + hgt}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + hgt}Z` });
+}
+function groupTable(title, rows, kind) {
+  const body = rows.slice(0, 12).map((g) => h("tr", { class: "row", tabindex: 0, onclick: () => { state.filters = { q: "", model: kind === "model" ? g.name : "", channel: kind === "channel" ? g.name : "", severity: "", outcome: "" }; go("records"); } },
+    h("td", {}, h("div", { class: "mono clip" }, g.name),
+      h("div", { class: "chips", style: "margin-top:3px" }, (kind === "model" ? g.channels : g.models || []).slice(0, 3).map((c) => h("span", { class: "tag" }, c)),
+        (g.response_models || []).filter((m) => kind === "model" && m !== g.name).slice(0, 2).map((m) => h("span", { class: "tag", title: "上游自报模型" }, "↩ " + m)),
+        (g.provenance || []).map((p) => h("span", { class: "tag" }, p)))),
+    h("td", { class: "r num" }, nf.format(g.requests)), h("td", { class: "r num" }, g.failed ? nf.format(g.failed) : "–"),
+    h("td", { class: "r num" }, ms(g.avg_ttfb_ms)), h("td", {}, g.severity ? sev(g.severity) : sev("ok")), h("td", { class: "muted", style: "white-space:nowrap" }, rel(g.last_seen))));
+  return h("section", { class: "card" }, h("header", {}, h("h3", {}, title)), h("div", { class: "tablewrap", style: "padding:6px 6px 8px" },
+    rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, title), h("th", { class: "r" }, "请求"), h("th", { class: "r" }, "失败"), h("th", { class: "r" }, "平均首包"), h("th", {}, "最高级别"), h("th", {}, "最近"))), h("tbody", {}, body))
+      : h("div", { class: "empty" }, "还没有数据。让一个请求经过代理试试。")));
+}
+
+/* ---------- 发现项 ---------- */
+function findingRow(f, withAck) {
+  const meta = [f.model && "模型 " + f.model, f.channel && "渠道 " + f.channel, f.count > 1 && "出现 " + f.count + " 次", f.last_seen && "最近 " + when(f.last_seen), f.first_seen && f.count > 1 && "首次 " + when(f.first_seen)].filter(Boolean);
+  return h("div", { class: "finding" + (f.acked ? " acked" : "") }, sev(f.severity),
+    h("div", { class: "t" }, f.title, " ", h("span", { class: "tag" }, CAT_LABEL[f.category] || f.category)),
+    h("div", { style: "display:flex;gap:6px" },
+      f.request_id ? h("button", { class: "btn sm", onclick: () => openRecord(f.request_id) }, "查看请求") : null,
+      withAck ? h("button", { class: "btn sm", onclick: async () => { await api("/ack-finding", { key: f.key, acked: !f.acked }); toast(f.acked ? "已恢复为待确认" : (f.category === "drift" ? "已确认，并将该字段并入基线" : "已确认")); refresh(false); } }, f.acked ? "撤销确认" : "确认") : null),
+    f.detail ? h("div", { class: "d" }, f.detail) : null,
+    f.scope ? h("div", { class: "d mono" }, scopeLabel(f.scope)) : null,
+    f.evidence ? h("div", { class: "e mono" }, f.evidence) : null,
+    h("div", { class: "m" }, meta.map((m) => h("span", {}, m))));
+}
+function scopeLabel(scope) { const [d, f, e] = scope.split("|"); return (DIR_LABEL[d] || d) + " · " + f + (e ? " · " + e : ""); }
+async function viewFindings(sink) {
+  const data = await api("/findings", null, sink), ff = state.findFilter;
+  const list = data.findings.filter((f) => (!ff.cat || f.category === ff.cat) && (!ff.open || !f.acked));
+  const cats = [["", "全部"], ["security", "渠道安全"], ["privacy", "隐私外泄"], ["integrity", "协议完整性"], ["drift", "字段漂移"]];
+  return h("div", {}, head("发现", "同一问题跨请求聚合为一条；确认后不再计入待办。"),
+    h("div", { class: "filters" },
+      h("div", { class: "seg", role: "group", "aria-label": "类别" }, cats.map(([id, label]) => h("button", { "aria-pressed": String(ff.cat === id), onclick: () => { ff.cat = id; refresh(false); } }, label + (id ? " " + data.findings.filter((f) => f.category === id && !f.acked).length : "")))),
+      h("div", { class: "seg", role: "group", "aria-label": "状态" }, h("button", { "aria-pressed": String(ff.open), onclick: () => { ff.open = true; refresh(false); } }, "待确认"), h("button", { "aria-pressed": String(!ff.open), onclick: () => { ff.open = false; refresh(false); } }, "含已确认"))),
+    h("section", { class: "card" }, h("div", { class: "body" }, list.length ? list.map((f) => findingRow(f, true)) : h("div", { class: "empty" }, "没有符合条件的发现项"))));
+}
+
+/* ---------- 请求列表 ---------- */
+async function viewRecords(sink) {
+  const f = state.filters, qs = new URLSearchParams({ limit: 100, offset: state.offset });
+  for (const [k, v] of Object.entries(f)) if (v) qs.set(k, v);
+  const data = await api("/records?" + qs, null, sink), o = state.overview;
+  const apply = () => { state.offset = 0; refresh(false); };
+  const sel = (key, label, options) => h("select", { "aria-label": label, onchange: (e) => { f[key] = e.target.value; apply(); } }, h("option", { value: "" }, label), options.map(([v, t]) => h("option", { value: v, selected: f[key] === v }, t)));
+  let debounce;
+  const filters = h("div", { class: "filters" },
+    h("input", { type: "search", placeholder: "搜索：ID、模型、渠道、工具名、发现项、错误…", value: f.q, oninput: (e) => { clearTimeout(debounce); debounce = setTimeout(() => { f.q = e.target.value; state.offset = 0; refreshTable(); }, 250); } }),
+    sel("model", "全部模型", (o.models || []).map((m) => [m.name, m.name])), sel("channel", "全部渠道", (o.channels || []).map((c) => [c.name, c.name])),
+    sel("severity", "任意级别", [["critical", "仅严重"], ["warn", "警告及以上"], ["notice", "留意及以上"], ["info", "有任何发现"]]),
+    sel("outcome", "任意结果", [["succeeded", "成功"], ["failed", "失败 / 取消"]]));
+  const holder = h("div", {});
+  const paint = (d) => holder.replaceChildren(recordsTable(d));
+  async function refreshTable() { const q2 = new URLSearchParams({ limit: 100, offset: state.offset }); for (const [k, v] of Object.entries(f)) if (v) q2.set(k, v); paint(await api("/records?" + q2)); state.lastSig = ""; } // 用户主动搜索后的局部重绘：作废签名，下次静默刷新重新比对
+  paint(data);
+  return h("div", {}, head("请求", "每一行是一次模型调用：客户端请求 → 发往上游 → 上游原始响应 → 返回客户端。"), filters, holder);
+}
+function recordsTable(data) {
+  const rows = [...(data.inflight || []), ...data.records];
+  if (!rows.length) return h("section", { class: "card" }, h("div", { class: "empty" }, "没有匹配的请求"));
+  const tr = rows.map((r) => {
+    const u = r.usage, inflight = r.outcome === "inflight";
+    const mismatch = (r.findings || []).some((x) => x.rule === "model-mismatch");
+    return h("tr", { class: "row", tabindex: 0, onclick: () => inflight ? toast("请求进行中，结束后可查看详情") : openRecord(r.id), onkeydown: (e) => { if (e.key === "Enter" && !inflight) openRecord(r.id); } },
+      h("td", { class: "muted num" }, rel(r.started_at)),
+      h("td", {}, h("div", { class: "mono clip" }, r.requested_model || r.model, r.model && r.model !== r.requested_model ? [h("span", { class: "arrow" }, "→"), r.model] : null),
+        h("div", { class: "chips", style: "margin-top:3px" }, r.response_model && mismatch ? h("span", { class: "tag new" }, "自报 " + r.response_model) : null,
+          h("span", { class: "tag" }, (r.source_format || "?") + " → " + (r.to_format || "?")), r.stream ? h("span", { class: "tag" }, "stream") : null, r.provenance ? h("span", { class: "tag" }, r.provenance) : null)),
+      h("td", {}, h("div", { class: "clip" }, r.channel || r.provider || "–"), (r.tool_calls || []).length ? h("div", { class: "muted clip", style: "font-size:12px" }, "工具：" + r.tool_calls.join(", ")) : null),
+      h("td", {}, inflight ? h("span", { class: "tag new" }, "进行中") : r.outcome === "succeeded" ? h("span", { class: "sub" }, r.stop_reason || "完成") : h("span", { title: r.error }, sev("critical", (r.outcome === "canceled" ? "取消" : r.outcome === "rejected" ? "拒绝" : r.outcome === "abandoned" ? "中断" : "失败") + (r.status_code && r.status_code !== 200 ? " " + r.status_code : "")))),
+      h("td", { class: "r num" }, u ? compact(u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens) : "–", h("span", { class: "arrow" }, "/"), u ? compact(u.output_tokens) : "–"),
+      h("td", { class: "r num" }, ms(r.ttfb_ms), h("span", { class: "arrow" }, "/"), ms(r.duration_ms)),
+      h("td", {}, h("div", { class: "chips" }, r.severity ? Object.entries(r.severity_counts || {}).sort((a, b) => "cwni".indexOf(a[0][0]) - "cwni".indexOf(b[0][0])).map(([lv, n]) => sev(lv, SEV_LABEL[lv] + " " + n)) : (inflight ? null : sev("ok")))));
+  });
+  const pager = h("div", { style: "display:flex;gap:8px;align-items:center;padding:10px 14px", class: "muted" }, `共 ${nf.format(data.total)} 条，当前 ${data.offset + 1}–${data.offset + data.records.length}`, h("span", { style: "flex:1" }),
+    h("button", { class: "btn sm", disabled: data.offset === 0, onclick: () => { state.offset = Math.max(0, data.offset - 100); refresh(false); } }, "上一页"),
+    h("button", { class: "btn sm", disabled: data.offset + data.records.length >= data.total, onclick: () => { state.offset = data.offset + 100; refresh(false); } }, "下一页"));
+  return h("section", { class: "card" }, h("div", { class: "tablewrap", "data-keep-scroll": "records" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "时间"), h("th", {}, "模型（请求 → 上游）"), h("th", {}, "渠道"), h("th", {}, "结果"), h("th", { class: "r" }, "Token 入 / 出"), h("th", { class: "r" }, "首包 / 总耗时"), h("th", {}, "发现"))), h("tbody", {}, tr))), pager);
+}
+
+/* ---------- JSON 树 ---------- */
+const OPAQUE = new Set(["input_schema", "parameters", "input", "arguments", "args", "properties", "schema", "json_schema"]);
+function disc(v) { if (v && typeof v === "object" && !Array.isArray(v)) for (const k of ["type", "role"]) if (typeof v[k] === "string" && /^[A-Za-z0-9_.:\-/]{1,48}$/.test(v[k])) return "<" + v[k] + ">"; return ""; }
+function typeDisc(v) { return v && typeof v === "object" && !Array.isArray(v) && typeof v.type === "string" && /^[A-Za-z0-9_.:\-/]{1,48}$/.test(v.type) ? "<" + v.type + ">" : ""; }
+function jsonTree(value, flagged, open) { const root = h("div", { class: "jt" }); root.append(jnode(null, value, "", flagged || new Set(), open ?? 2, true)); return root; }
+function jnode(key, v, path, flagged, open, last) {
+  const line = h("div", {}), isFlag = flagged.has(path || "$") || (typeof v === "string" && flagged.has(path + "=" + v));
+  const keyEl = key == null ? null : [h("span", { class: "k" + (isFlag ? " flag" : ""), title: isFlag ? "基线之外的字段 / 取值" : null }, JSON.stringify(key)), ": "];
+  if (v === null || typeof v !== "object") {
+    let el;
+    if (typeof v === "string") {
+      const long = v.length > 400; el = h("span", { class: "s" }, JSON.stringify(long ? v.slice(0, 400) : v));
+      if (long) { const more = h("span", { class: "more" }, ` …展开其余 ${nf.format(v.length - 400)} 字符`); more.onclick = () => { el.textContent = JSON.stringify(v); more.remove(); }; line.append(keyEl || "", el, more, last ? "" : ","); return line; }
+    } else el = h("span", { class: typeof v === "number" ? "d" : "l" }, String(v));
+    line.append(...(keyEl || []), el, last ? "" : ","); return line;
+  }
+  const isArr = Array.isArray(v), entries = isArr ? v.map((x, i) => [i, x]) : Object.entries(v), [lb, rb] = isArr ? ["[", "]"] : ["{", "}"];
+  if (!entries.length) { line.append(...(keyEl || []), lb + rb, last ? "" : ","); return line; }
+  const kids = h("div", { class: "n" }), tog = h("span", { class: "tog", role: "button", tabindex: 0 }), sum = h("span", { class: "c" });
+  let built = false, expanded = false;
+  const build = () => { built = true; const LIMIT = 200;
+    const add = (from) => { entries.slice(from, from + LIMIT).forEach(([k, child], i) => {
+      const cp = isArr ? path + "[]" + disc(child) : (path ? path + "." + k : k) + typeDisc(child); // 与后端 shape.go 的路径规则保持一致
+      kids.append(jnode(isArr ? null : k, child, cp, OPAQUE.has(k) ? new Set() : flagged, open - 1, from + i === entries.length - 1)); });
+      if (from + LIMIT < entries.length) { const more = h("div", { class: "more" }, `…还有 ${entries.length - from - LIMIT} 项`); more.onclick = () => { more.remove(); add(from + LIMIT); }; kids.append(more); } };
+    add(0); };
+  const set = (on) => { expanded = on; if (on && !built) build(); kids.hidden = !on; tog.textContent = on ? "▾" : "▸"; sum.textContent = on ? "" : ` ${isArr ? entries.length + " 项" : entries.length + " 个键"} ${rb}${last ? "" : ","}`; tail.hidden = !on; };
+  const tail = h("div", {}, rb + (last ? "" : ","));
+  tog.onclick = () => set(!expanded); tog.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set(!expanded); } };
+  line.append(tog, ...(keyEl || []), lb, sum); const wrap = h("div", {}, line, kids, tail); set(open > 0 || isFlag); return wrap;
+}
+
+/* ---------- 对话视图：把四种协议的请求体归一成 角色 + 内容块 ---------- */
+function normalizeRequest(req) {
+  if (!req || typeof req !== "object") return null;
+  if (req.request && req.request.contents) req = Object.assign({ model: req.model }, req.request);
+  const out = { system: [], messages: [], tools: [], params: {} };
+  const text = (t, x) => ({ type: t, text: typeof x === "string" ? x : JSON.stringify(x, null, 2) });
+  const skip = new Set(["messages", "system", "tools", "input", "instructions", "contents", "systemInstruction", "system_instruction"]);
+  for (const [k, v] of Object.entries(req)) if (!skip.has(k)) out.params[k] = v;
+  const claudeBlocks = (content) => typeof content === "string" ? [text("text", content)] : (content || []).map((b) => {
+    if (b.type === "text" || b.type === "input_text" || b.type === "output_text") return { type: "text", text: b.text || "", cache: !!b.cache_control };
+    if (b.type === "thinking") return { type: "thinking", text: b.thinking || "", note: b.signature ? "signature " + b.signature.length + " 字符" : "无 signature" };
+    if (b.type === "tool_use" || b.type === "server_tool_use") return { type: "tool_use", name: b.name, text: JSON.stringify(b.input, null, 2), id: b.id };
+    if (b.type === "tool_result") return { type: "tool_result", id: b.tool_use_id, text: typeof b.content === "string" ? b.content : (b.content || []).map((c) => c.text ?? "[" + c.type + "]").join("\n"), note: b.is_error ? "is_error" : "" };
+    if (b.type === "image" || b.type === "image_url" || b.type === "input_image" || b.type === "document") return { type: b.type, text: "[" + b.type + (b.source?.media_type ? " " + b.source.media_type : "") + "]" };
+    return text(b.type || "block", b);
+  });
+  if (req.system) out.system = claudeBlocks(req.system);
+  if (req.instructions) out.system = [text("text", req.instructions)];
+  const si = req.systemInstruction || req.system_instruction; if (si) out.system = (si.parts || []).map((p) => text("text", p.text ?? p));
+  for (const m of req.messages || []) {
+    const blocks = claudeBlocks(m.content);
+    for (const tc of m.tool_calls || []) blocks.push({ type: "tool_use", name: tc.function?.name, id: tc.id, text: tc.function?.arguments || "" });
+    if (m.role === "tool") blocks.forEach((b) => { b.type = "tool_result"; b.id = m.tool_call_id; });
+    if (m.role === "system" || m.role === "developer") out.system.push(...blocks); else out.messages.push({ role: m.role, blocks });
+  }
+  const input = typeof req.input === "string" ? [{ type: "message", role: "user", content: req.input }] : req.input || [];
+  const addTools = (tools, ns) => { for (const t of tools || []) { if (Array.isArray(t.tools)) addTools(t.tools, t.name); else if (t.functionDeclarations) t.functionDeclarations.forEach((d) => out.tools.push({ name: d.name, desc: d.description })); else out.tools.push({ name: (ns ? ns + "." : "") + (t.name || t.function?.name || t.type), desc: t.description || t.function?.description || (t.name ? "" : "服务端工具") }); } };
+  for (const it of input) {
+    if (Array.isArray(it.tools)) { addTools(it.tools); continue; } // 新版 Codex：工具声明在 input 的 additional_tools 条目里
+    if (it.type === "function_call" || it.type === "custom_tool_call") out.messages.push({ role: "assistant", blocks: [{ type: "tool_use", name: it.name, id: it.call_id, text: it.arguments || it.input || "" }] });
+    else if (it.type === "function_call_output" || it.type === "custom_tool_call_output") out.messages.push({ role: "tool", blocks: [{ type: "tool_result", id: it.call_id, text: typeof it.output === "string" ? it.output : JSON.stringify(it.output, null, 2) }] });
+    else if (it.type === "reasoning") out.messages.push({ role: "assistant", blocks: [{ type: "thinking", text: (it.summary || []).map((x) => x.text).join("\n"), note: it.encrypted_content ? "encrypted_content " + it.encrypted_content.length + " 字符" : "" }] });
+    else if (it.role) out.messages.push({ role: it.role, blocks: claudeBlocks(it.content) });
+    else out.messages.push({ role: it.type || "item", blocks: [text(it.type || "item", it)] });
+  }
+  for (const c of req.contents || []) out.messages.push({ role: c.role || "user", blocks: (c.parts || []).map((p) => p.functionCall ? { type: "tool_use", name: p.functionCall.name, text: JSON.stringify(p.functionCall.args, null, 2) } : p.functionResponse ? { type: "tool_result", name: p.functionResponse.name, text: JSON.stringify(p.functionResponse.response, null, 2) } : p.text != null ? { type: p.thought ? "thinking" : "text", text: p.text } : text("part", p)) });
+  addTools(req.tools);
+  return out;
+}
+function blockView(b) {
+  const label = { text: "文本", thinking: "思考", tool_use: "工具调用", server_tool_use: "服务端工具调用", tool_result: "工具结果", refusal: "拒绝" }[b.type] || b.type;
+  const isTool = b.type === "tool_use" || b.type === "tool_result" || b.type === "server_tool_use";
+  let body = b.text ?? "";
+  if (isTool && b.input != null && !body) body = b.input;
+  if (isTool) { try { body = JSON.stringify(JSON.parse(body), null, 2); } catch (e) {} }
+  const pre = h("pre", {}), LIMIT = 1600;
+  if (body.length > LIMIT) { pre.textContent = body.slice(0, LIMIT); const more = h("button", { class: "btn ghost sm", onclick: () => { pre.textContent = body; more.remove(); } }, `展开其余 ${nf.format(body.length - LIMIT)} 字符`); return h("div", { class: "blk " + (isTool ? "tool" : b.type) }, bt(), pre, more); }
+  pre.textContent = body;
+  return h("div", { class: "blk " + (isTool ? "tool" : b.type) }, bt(), pre);
+  function bt() { return h("div", { class: "bt" }, label, b.name ? h("span", { class: "tag mono" }, b.name) : null, b.id ? h("span", { class: "mono" }, b.id) : null, b.cache ? h("span", { class: "tag" }, "cache_control") : null, b.note ? h("span", {}, b.note) : null, b.signature_len ? h("span", {}, "signature " + b.signature_len + " 字符") : null, b.truncated ? h("span", { class: "tag" }, "已截断") : null); }
+}
+function messageCard(role, blocks, extra) { return h("div", { class: "msg " + (role === "assistant" || role === "model" ? "assistant" : "") }, h("div", { class: "who" }, role, extra || null), blocks.length ? blocks.map(blockView) : h("div", { class: "blk muted" }, "（空）")); }
+function conversationView(detail, summary) {
+  const req = normalizeRequest(detail.client_request?.json), box = h("div", {});
+  if (!req) { box.append(h("div", { class: "empty" }, detail.client_request?.truncated ? "请求体超过保存上限，无法还原对话。可在设置中调大 max_body_mb。" : "请求体不是可识别的 JSON")); }
+  else {
+    box.append(h("section", { class: "card", style: "margin-bottom:12px" }, h("div", { class: "body" }, h("h3", { style: "margin-bottom:8px" }, "请求参数"),
+      h("div", { class: "chips" }, Object.entries(req.params).map(([k, v]) => h("span", { class: "tag mono", title: JSON.stringify(v) }, k + ": " + (typeof v === "object" ? JSON.stringify(v).slice(0, 60) : v)))),
+      req.tools.length ? [h("h3", { style: "margin:14px 0 8px" }, `已声明工具（${req.tools.length}）`), h("div", { class: "chips" }, req.tools.map((t) => h("span", { class: "tag mono", title: t.desc || "" }, t.name)))] : null)));
+    if (req.system.length) box.append(messageCard("system", req.system));
+    const SHOW = 12, hidden = Math.max(0, req.messages.length - SHOW), list = h("div", {});
+    const paint = (from) => list.replaceChildren(...req.messages.slice(from).map((m) => messageCard(m.role, m.blocks)));
+    if (hidden) { const more = h("button", { class: "btn", style: "margin-bottom:10px", onclick: () => { paint(0); more.remove(); } }, `显示更早的 ${hidden} 条消息`); box.append(more); }
+    paint(hidden); box.append(list);
+  }
+  const resp = detail.downstream_response?.message || detail.upstream_response?.message;
+  if (resp) box.append(messageCard("assistant", resp.blocks || [], [h("span", { class: "tag new" }, "本次响应"), resp.stop_reason ? h("span", { class: "tag" }, resp.stop_reason) : null]));
+  else if (summary.error) box.append(h("div", { class: "msg" }, h("div", { class: "who" }, "error"), h("div", { class: "blk" }, h("pre", {}, summary.error))));
+  return box;
+}
+
+/* ---------- 请求详情 ---------- */
+async function openRecord(id) {
+  let data; try { data = await api("/record?id=" + encodeURIComponent(id)); } catch (e) { toast(e.message); return; }
+  const su = data.summary, de = data.detail, u = su.usage;
+  const flaggedFor = (dir, event) => { const set = new Set(); for (const f of su.findings || []) if (f.category === "drift" && f.path && f.scope && (f.scope.startsWith(dir + "|") || (dir === "upstream_response" && f.scope.startsWith("upstream_ws|")))) { const ev = f.scope.split("|")[2] || ""; if (!event || !ev || ev === event || ev === "(document)") set.add(f.path.split("=")[0]), set.add(f.path); } return set; };
+  const close = () => { scrim.remove(); drawer.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const scrim = h("div", { class: "scrim", onclick: close }), content = h("div", { class: "content" });
+  const tabs = [["summary", "摘要"], ["chat", "对话"], ["creq", "① 客户端请求"], ["ureq", "② 发往上游"], ["uresp", "③ 上游响应"], ["dresp", "④ 返回客户端"], ["meta", "元数据"]];
+  const tabBar = h("div", { class: "tabs", role: "tablist" });
+  const show = (id2) => { [...tabBar.children].forEach((b) => b.setAttribute("aria-selected", String(b.dataset.id === id2))); content.replaceChildren(panels[id2]()); drawer.scrollTop = 0; };
+  tabs.forEach(([id2, label]) => tabBar.append(h("button", { role: "tab", "data-id": id2, onclick: () => show(id2) }, label)));
+  const node = (small, big) => h("div", { class: "node" }, h("small", {}, small), h("span", { class: "mono" }, big || "–"));
+  const drawer = h("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-label": "请求详情" },
+    h("div", { class: "top" }, h("div", { style: "display:flex;gap:12px;align-items:center" }, h("h2", { class: "mono", style: "font-size:15px" }, su.path || "request"), su.severity ? sev(su.severity) : sev("ok"), h("span", { class: "muted" }, clock(su.started_at)), h("span", { style: "flex:1" }), h("button", { class: "btn", onclick: close }, "关闭 Esc")),
+      h("div", { class: "flow" }, node("客户端请求 · " + (su.source_format || "?"), su.requested_model), h("span", { class: "arrow" }, "→"), node("发往上游 · " + (su.to_format || "?"), su.model), h("span", { class: "arrow" }, "→"), node("渠道", su.channel || su.provider), h("span", { class: "arrow" }, "→"), node("上游自报" + (su.provenance ? " · " + su.provenance : ""), su.response_model)), tabBar), content);
+  // 四段报文各占一个页签，统一为 起始行 → Headers → Body 三块，与浏览器 DevTools 的阅读习惯一致。
+  const passthrough = su.to_format && su.to_format === su.source_format;
+  const lastUsage = (de.usages || [])[(de.usages || []).length - 1];
+  const sameHeaders = (a, b) => JSON.stringify(a || {}) === JSON.stringify(b || {});
+  const legPanel = (parts) => () => h("div", { class: "grid" }, parts().filter(Boolean));
+  const requestBody = (sb, dir, emptyNote) => section("Body", sb ? bytes(sb.size) + (sb.truncated ? " · 超出保存上限，仅保留前段" : "") : "", sb ? bodyViewer(sb, flaggedFor(dir)) : h("div", { class: "muted" }, emptyNote));
+  const responseParts = (cap, dir, status, headers, headersNote, emptyNote) => {
+    if (!cap) return [section("状态", "", startLine(status)), section("Headers", headers ? Object.keys(headers).length + " 项" : "", headersTable(headers, headersNote)), section("Body", "", h("div", { class: "muted" }, emptyNote))];
+    const m = cap.message || {};
+    const views = [];
+    if ((m.blocks || []).length || m.error) views.push(["重组内容", () => h("div", {}, m.error ? h("pre", { class: "raw", style: "color:var(--critical);margin-bottom:10px" }, m.error) : null, (m.blocks || []).length ? messageCard(m.role || "assistant", m.blocks) : null)]);
+    if ((cap.events || []).length) views.push([`事件流 ${cap.events.length}`, () => h("div", {}, h("div", { class: "chips", style: "margin-bottom:8px" }, Object.entries(m.event_counts || {}).map(([k, n]) => h("span", { class: "tag mono" }, k + " × " + n))), eventList(cap.events, (name) => flaggedFor(dir, name)))]);
+    if (cap.document) views.push(["结构化", () => cap.document.json !== undefined ? jsonTree(cap.document.json, flaggedFor(dir), 2) : h("pre", { class: "raw" }, cap.document.text || "")]);
+    const rawText = () => cap.document ? (cap.document.json !== undefined ? JSON.stringify(cap.document.json, null, 2) : cap.document.text || "") : (cap.events || []).map((ev) => (ev.name && ev.name !== "(data)" && ev.name !== "[DONE]" ? "event: " + ev.name + "\n" : "") + "data: " + (ev.json !== undefined ? JSON.stringify(ev.json) : ev.text) + "\n").join("\n");
+    views.push(["原文", () => rawView(rawText())]);
+    return [
+      section("状态", "", startLine(status), h("div", { class: "kv", style: "margin-top:12px" }, kv("协议", cap.format || m.format), kv("消息 ID", m.id, true), kv("自报模型", m.model, true), kv("结束原因", m.stop_reason), kv("分片 / 字节", cap.chunks + " / " + bytes(cap.bytes)), kv("首片 / 末片", ms(cap.first_ms) + " / " + ms(cap.last_ms)), kv("完整结束", m.done ? "是" : "否")),
+        (m.issues || []).length ? h("div", { class: "chips", style: "margin-top:12px" }, m.issues.map((x) => sev("warn", x))) : null),
+      section("Headers", headers ? Object.keys(headers).length + " 项" : "", headersTable(headers, headersNote)),
+      m.usage || m.extra ? section("usage 与指纹字段", "取自响应体原文", m.usage ? jsonTree(m.usage, flaggedFor(dir), 3) : null, m.extra ? jsonTree(m.extra, null, 2) : null) : null,
+      section("Body", bytes(cap.bytes) + (cap.truncated ? " · 超出保存上限的事件未保存" : "") + (flaggedFor(dir).size ? " · 高亮项为基线之外的字段" : ""), switcher(views)),
+    ];
+  };
+  const panels = {
+    summary: () => h("div", {}, h("section", { class: "card", style: "margin-bottom:14px" }, h("div", { class: "body" }, h("div", { class: "kv" },
+        kv("结果", su.outcome + (su.status_code ? " · " + su.status_code : "")), kv("总耗时", ms(su.duration_ms)), kv("首包", ms(su.ttfb_ms)), kv("尝试次数", su.attempts), kv("请求体", bytes(su.request_bytes)), kv("上游 / 下游响应", bytes(su.upstream_bytes) + " / " + bytes(su.downstream_bytes)),
+        kv("输入 token", u ? nf.format(u.input_tokens) : "–"), kv("缓存读 / 写", u ? nf.format(u.cache_read_tokens) + " / " + nf.format(u.cache_creation_tokens) : "–"), kv("输出 token", u ? nf.format(u.output_tokens) + (u.reasoning_tokens ? "（推理 " + nf.format(u.reasoning_tokens) + "）" : "") : "–"), kv("凭据", su.auth_id, true), kv("Request ID", su.id, true), kv("Trace ID", su.trace_id, true)),
+        su.error ? h("pre", { class: "raw", style: "margin-top:12px;color:var(--critical)" }, su.error) : null)),
+      h("section", { class: "card" }, h("header", {}, h("h3", {}, `本次请求的发现（${(su.findings || []).length}）`)), h("div", { class: "body" }, (su.findings || []).length ? su.findings.map((f) => findingRow(Object.assign({}, f, { request_id: "" }), false)) : h("div", { class: "empty" }, "未发现异常")))),
+    chat: () => conversationView(de, su),
+    creq: legPanel(() => [
+      section("请求", "", startLine((su.path || "(未知路径)") + "  ·  " + (su.source_format || "?") + " 协议  ·  模型 " + (su.requested_model || "?"))),
+      section("Headers", de.client_headers ? Object.keys(de.client_headers).length + " 项 · 凭据类已脱敏" : "", headersTable(de.client_headers, "未抓到请求头")),
+      requestBody(de.client_request, "client_request", "无请求体")]),
+    ureq: legPanel(() => [
+      section("请求", "", startLine((lastUsage?.base_url || su.channel || "(渠道未知)") + "  ·  " + (su.to_format || "?") + " 协议  ·  模型 " + (su.model || "?")),
+        h("div", { class: "kv", style: "margin-top:12px" }, kv("Provider", su.provider), kv("凭据", su.auth_id, true), kv("凭据类型", lastUsage?.auth_type), kv("尝试次数", su.attempts))),
+      section("Headers", "", h("div", { class: "muted" }, "宿主的执行器在内部拼装发往渠道的请求头（渠道密钥、伪装头等），插件接口不暴露这一层，所以这里无法展示。"),
+        (de.attempts || []).some((a) => a.headers && !sameHeaders(a.headers, de.client_headers)) ? [h("h3", { style: "margin:14px 0 6px" }, "选定凭据后、交给执行器的头部提示（与客户端请求头不同）"), (de.attempts || []).map((a) => headersTable(a.headers))] : null),
+      requestBody(de.upstream_request, "upstream_request", passthrough ? "同协议直通：宿主不经过翻译层，发往上游的请求体即「① 客户端请求」的请求体（执行器可能再附加少量伪装字段，插件接口不暴露）。" : "未抓取（需开启 capture_upstream，且请求需到达上游）")]),
+    uresp: legPanel(() => responseParts(de.upstream_response, "upstream_response",
+      lastUsage ? "HTTP " + (lastUsage.failed ? lastUsage.failure_status || "失败" : 200) + (lastUsage.ttft_ms ? "  ·  首 token " + ms(lastUsage.ttft_ms) : "") + "  ·  总耗时 " + ms(lastUsage.latency_ms) : "(无 usage 记录)",
+      lastUsage?.response_headers, "宿主未提供上游响应头",
+      lastUsage?.failed ? "上游返回错误，响应体：\n" + (lastUsage.failure_body || "(空)") : passthrough && de.downstream_response ? "同协议直通：宿主不经过翻译层，「④ 返回客户端」的 Body 就是上游原文，渠道安全检查已基于它执行。" : "未抓取上游响应体（capture_upstream 关闭，或请求未到达上游）")),
+    dresp: legPanel(() => responseParts(de.downstream_response, "downstream_response", "HTTP " + (su.status_code || "–") + "  ·  " + (su.source_format || "?") + " 协议" + (su.ttfb_ms ? "  ·  首包 " + ms(su.ttfb_ms) : ""),
+      de.downstream_response?.headers, "未抓到响应头", su.error || "无响应体")),
+    meta: legPanel(() => [section("执行元数据", "", de.metadata ? jsonTree(de.metadata, null, 3) : h("span", { class: "muted" }, "无")),
+      section("各次尝试的 usage 记录", (de.usages || []).length + " 条", (de.usages || []).length ? jsonTree(de.usages, null, 2) : h("span", { class: "muted" }, "无"))]),
+  };
+  document.body.append(scrim, drawer); show("summary");
+}
+function section(title, note, ...content) { return h("section", { class: "card" }, h("header", {}, h("h3", {}, title), note ? h("span", { class: "muted", style: "font-size:12.5px" }, note) : null), h("div", { class: "body" }, content)); }
+function startLine(text) { return h("div", { class: "mono startline" }, text); }
+function headersTable(headers, emptyNote) {
+  const names = Object.keys(headers || {}).sort((a, b) => a.localeCompare(b));
+  if (!names.length) return h("div", { class: "muted" }, emptyNote || "无");
+  return h("table", { class: "hdr" }, h("tbody", {}, names.flatMap((name) => headers[name].map((value) => h("tr", {}, h("th", { scope: "row", class: "mono" }, name), h("td", { class: "mono" }, value))))));
+}
+function copyText(text) {
+  const done = () => toast("已复制");
+  if (navigator.clipboard && isSecureContext) return navigator.clipboard.writeText(text).then(done, () => toast("复制失败"));
+  const ta = h("textarea", { style: "position:fixed;opacity:0" }); ta.value = text; document.body.append(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { toast("复制失败"); } ta.remove();
+}
+function rawView(text) {
+  const LIMIT = 200000, pre = h("pre", { class: "raw rawbox" }, text.length > LIMIT ? text.slice(0, LIMIT) : text);
+  return h("div", {}, h("div", { style: "display:flex;gap:8px;align-items:center;margin-bottom:8px" }, h("button", { class: "btn sm", onclick: () => copyText(text) }, "复制全部"),
+    text.length > LIMIT ? h("button", { class: "btn sm", onclick: (e) => { pre.textContent = text; e.target.remove(); } }, `显示其余 ${bytes(text.length - LIMIT)}`) : null), pre);
+}
+function switcher(views) {
+  const holder = h("div", {}), seg = h("div", { class: "seg", role: "group", style: "margin-bottom:12px" });
+  const pick = (i) => { [...seg.children].forEach((b, j) => b.setAttribute("aria-pressed", String(i === j))); holder.replaceChildren(views[i][1]()); };
+  views.forEach(([label], i) => seg.append(h("button", { onclick: () => pick(i) }, label)));
+  pick(0); return h("div", {}, views.length > 1 ? seg : null, holder);
+}
+function bodyViewer(sb, flagged) {
+  if (sb.json === undefined) return rawView(sb.text || "");
+  return switcher([["结构化", () => h("div", {}, flagged.size ? h("p", { class: "muted", style: "margin:0 0 8px" }, "高亮项为基线之外的字段") : null, jsonTree(sb.json, flagged, 2))], ["原文", () => rawView(JSON.stringify(sb.json, null, 2))]]);
+}
+function kv(label, value, mono) { return h("div", {}, h("small", {}, label), h("span", { class: mono ? "mono" : "", style: "overflow-wrap:anywhere" }, value == null || value === "" ? "–" : value)); }
+function eventList(events, flaggedFor) {
+  const box = h("div", {}), LIMIT = 300;
+  const add = (from) => { events.slice(from, from + LIMIT).forEach((ev) => box.append(h("div", { class: "ev" }, h("div", { class: "t mono" }, "+" + ev.t + "ms"), h("div", { class: "mono" }, ev.name || "(data)"), h("div", { class: "body" }, ev.json !== undefined ? jsonTree(ev.json, flaggedFor(ev.name || "(data)"), 0) : h("span", { class: "mono muted" }, ev.text)))));
+    if (from + LIMIT < events.length) { const more = h("button", { class: "btn", style: "margin-top:10px", onclick: () => { more.remove(); add(from + LIMIT); } }, `再显示 ${Math.min(LIMIT, events.length - from - LIMIT)} 个事件`); box.append(more); } };
+  add(0); return box;
+}
+
+/* ---------- 字段图谱 ---------- */
+async function viewSchema(sink) {
+  const data = await api("/schema", null, sink), sf = state.schemaFilter;
+  if (!data.scopes.length) return h("div", {}, head("字段图谱", ""), h("section", { class: "card" }, h("div", { class: "empty" }, "还没有观测到任何字段")));
+  const driftOf = (sc) => sc.fields.filter((f) => !f.baseline && !f.acked).length;
+  if (!data.scopes.some((x) => x.scope === state.scope)) state.scope = (data.scopes.find(driftOf) || data.scopes.find((x) => x.direction === "upstream_response") || data.scopes[0]).scope;
+  const cur = data.scopes.find((x) => x.scope === state.scope);
+  const side = h("div", { class: "card scopes", "data-keep-scroll": "scopes" });
+  for (const dir of ["upstream_response", "upstream_ws", "downstream_response", "upstream_request", "client_request", "upstream_headers"]) {
+    const group = data.scopes.filter((x) => x.direction === dir); if (!group.length) continue;
+    side.append(h("h3", {}, DIR_LABEL[dir]));
+    for (const sc of group) { const d = driftOf(sc); side.append(h("button", { "aria-current": String(sc.scope === state.scope), title: sc.scope, onclick: () => { state.scope = sc.scope; refresh(false); } }, h("span", { class: "nm mono" }, sc.format + (sc.event ? " · " + sc.event : "")), d ? h("span", { class: "tag new" }, "+" + d) : null, h("span", { class: "muted num", style: "font-size:12px" }, compact(sc.observations)))); }
+  }
+  const models = Object.entries(cur.models).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const q = sf.q.toLowerCase(), fields = cur.fields.filter((f) => (!sf.drift || (!f.baseline && !f.acked)) && (!q || f.path.toLowerCase().includes(q)));
+  const pathCell = (p) => { const i = Math.max(p.lastIndexOf("."), p.lastIndexOf("]") === p.length - 1 ? -1 : -1); const cut = p.lastIndexOf("."); return h("span", { class: "path mono" }, cut > 0 ? h("span", { class: "dim" }, p.slice(0, cut + 1)) : null, cut > 0 ? p.slice(cut + 1) : p); };
+  const rows = fields.map((f) => { const isNew = !f.baseline && !f.acked, rate = cur.observations ? f.count / cur.observations : 0;
+    return h("tr", {}, h("td", {}, pathCell(f.path), " ", isNew ? h("span", { class: "tag new" }, "基线外") : f.acked ? h("span", { class: "tag" }, "已确认") : null, f.example ? h("div", { class: "muted mono clip", title: f.example, style: "font-size:12px;max-width:420px" }, f.example) : null),
+      h("td", { class: "mono" }, Object.keys(f.types).join(" | ")),
+      h("td", { class: "num", style: "white-space:nowrap" }, h("span", { class: "meter", role: "img", "aria-label": "出现率" }, h("i", { style: `width:${Math.round(rate * 100)}%` })), Math.round(rate * 100) + "%"),
+      models.map(([m, total]) => { const n = f.models[m] || 0; return h("td", { class: "r num", title: `${m}：${n} / ${total}` }, n ? Math.round(n / total * 100) + "%" : h("span", { class: "muted" }, "–")); }),
+      h("td", { class: "muted", style: "white-space:nowrap" }, rel(f.first_seen)),
+      h("td", { style: "white-space:nowrap" }, f.last_request_id ? h("button", { class: "btn ghost sm", onclick: () => openRecord(f.last_request_id) }, "样本") : null, !f.baseline ? h("button", { class: "btn sm", onclick: async () => { await api("/ack-field", { scope: cur.scope, path: f.path, acked: !f.acked }); refresh(false); } }, f.acked ? "撤销" : "并入基线") : null)); });
+  let debounce;
+  const panel = h("div", {},
+    h("div", { class: "filters" }, h("input", { type: "search", placeholder: "按路径筛选，例如 usage", value: sf.q, oninput: (e) => { clearTimeout(debounce); debounce = setTimeout(() => { sf.q = e.target.value; refresh(false); }, 300); } }),
+      h("div", { class: "seg" }, h("button", { "aria-pressed": String(!sf.drift), onclick: () => { sf.drift = false; refresh(false); } }, "全部字段"), h("button", { "aria-pressed": String(sf.drift), onclick: () => { sf.drift = true; refresh(false); } }, "仅基线外"))),
+    h("section", { class: "card" }, h("header", { style: "padding-bottom:10px;flex-wrap:wrap" }, h("h3", { class: "mono" }, scopeLabel(cur.scope)), cur.learning ? h("span", { class: "tag new" }, `学习中 ${Math.min(cur.requests, data.learn_samples)}/${data.learn_samples} 个请求`) : h("span", { class: "tag" }, "基线已建立"), h("span", { class: "muted" }, `观测 ${nf.format(cur.observations)} 次 · ${cur.fields.length} 个字段`)),
+      h("div", { class: "tablewrap viewport pinfirst", "data-keep-scroll": "schema:" + cur.scope + ":" + sf.q + ":" + sf.drift }, rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "字段路径 / 示例值"), h("th", {}, "类型"), h("th", {}, "出现率"), models.map(([m]) => h("th", { class: "r", title: m }, h("span", { class: "clip", style: "display:inline-block;max-width:110px;vertical-align:bottom" }, m))), h("th", {}, "首次出现"), h("th", {}, ""))), h("tbody", {}, rows)) : h("div", { class: "empty" }, "没有符合条件的字段"))));
+  return h("div", {}, head("字段图谱", "每个作用域下观测到的全部字段；按模型对比出现率，一眼看出哪个模型多了或少了字段。"), h("div", { class: "atlas" }, side, panel));
+}
+
+/* ---------- 设置 ---------- */
+function viewSettings() {
+  const o = state.overview, c = o.config, st = o.stats;
+  const act = (label, body, path, cls) => h("button", { class: "btn " + (cls || ""), onclick: async () => { if (!confirm(label + "？此操作不可撤销。")) return; await api(path, body); toast("已完成"); refresh(false); } }, label);
+  return h("div", {}, head("设置", "配置项在 CLIProxyAPI 的 config.yaml → plugins.configs.cpa-inspector 下修改，保存后热生效。"),
+    h("div", { class: "grid two" },
+      h("section", { class: "card" }, h("header", {}, h("h3", {}, "当前配置")), h("div", { class: "body" }, h("div", { class: "kv" }, Object.entries(c).map(([k, v]) => kv(k, String(v), true))))),
+      h("section", { class: "card" }, h("header", {}, h("h3", {}, "运行状态")), h("div", { class: "body" }, h("div", { class: "kv" }, kv("启动时间", clock(o.started_at)), kv("已处理请求", nf.format(st.requests)), kv("上游分片", nf.format(st.upstream_chunks)), kv("下游分片", nf.format(st.downstream_chunks)), kv("未能关联的上游分片", nf.format(st.orphan_chunks)), kv("存储占用", bytes(o.storage.bytes) + (o.storage.memory_only ? "（数据目录不可写，仅内存）" : "")))))),
+    h("section", { class: "card", style: "margin-top:16px" }, h("header", {}, h("h3", {}, "基线与数据")), h("div", { class: "body", style: "display:grid;gap:12px" },
+      h("p", { class: "sub", style: "margin:0" }, "「重建基线」表示你已审阅当前所有字段并认定为正常：全部字段并入基线，现有漂移发现标记为已确认，此后只报告新的变化。"),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, act("以当前状态重建基线", {}, "/rebaseline", "primary"), act("清空请求记录", { target: "records" }, "/clear", "danger"), act("清空发现项", { target: "findings" }, "/clear", "danger"), act("清空字段图谱", { target: "schema" }, "/clear", "danger"),
+        h("button", { class: "btn", onclick: () => { try { localStorage.removeItem(KEY_STORE); } catch (e) {} state.key = ""; renderGate(""); } }, "退出并清除本机保存的密钥")))));
+}
+
+/* ---------- 启动 ---------- */
+(async function boot() {
+  if (!state.key) return renderGate("");
+  try { state.overview = await api("/overview"); renderApp(); } catch (e) { renderGate(e.auth ? e.message : "无法连接 Management API：" + e.message); }
+})();
+</script>
+</body>
+</html>
