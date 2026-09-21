@@ -161,6 +161,7 @@ type record struct {
 
 type inspector struct {
 	mu        sync.Mutex
+	flushMu   sync.Mutex // 串行化状态落盘：快照与写文件必须成对、按序完成
 	cfg       config
 	active    map[string]*record
 	byPrint   map[string][]string
@@ -270,6 +271,8 @@ func (ins *inspector) loop() {
 }
 
 func (ins *inspector) flushState() {
+	ins.flushMu.Lock()
+	defer ins.flushMu.Unlock()
 	ins.mu.Lock()
 	var schemaJSON, findingsJSON []byte
 	if ins.schema.dirty {
@@ -674,6 +677,7 @@ func (ins *inspector) report(rec *record, f finding) {
 	if f.Key == "" {
 		f.Key = findingKey(f.Rule, f.Title, f.Evidence)
 	}
+	f.Evidence = maskSecretsIn(f.Evidence) // 在算完 Key 之后：打码不应改变聚合键
 	if rec != nil && !rec.findingKeys[f.Key] && len(rec.sum.Findings) < maxRecFindings {
 		rec.findingKeys[f.Key] = true
 		rec.sum.Findings = append(rec.sum.Findings, f)
@@ -822,7 +826,7 @@ func (ins *inspector) observeHeaders(rec *record, u *usageRecord, now time.Time)
 	entries := make([]shapeEntry, 0, len(u.ResponseHeaders))
 	for name, values := range u.ResponseHeaders {
 		example := ""
-		if len(values) > 0 && !sensitiveHeaders[strings.ToLower(name)] {
+		if len(values) > 0 && !isSensitiveHeader(name) {
 			example = truncate(values[0], 96)
 		}
 		entries = append(entries, shapeEntry{Path: strings.ToLower(name), Type: "header", Example: example})

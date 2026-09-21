@@ -238,17 +238,22 @@ func (m *message) cachedTokens() int64 {
 	if m == nil || m.Usage == nil {
 		return -1
 	}
+	var v any
 	switch m.Format {
 	case fmtClaude:
-		return asInt64(m.Usage["cache_read_input_tokens"])
+		v = m.Usage["cache_read_input_tokens"]
 	case fmtChat:
-		return asInt64(nestedGet(m.Usage, "prompt_tokens_details", "cached_tokens"))
+		v = nestedGet(m.Usage, "prompt_tokens_details", "cached_tokens")
 	case fmtResponses:
-		return asInt64(nestedGet(m.Usage, "input_tokens_details", "cached_tokens"))
+		v = nestedGet(m.Usage, "input_tokens_details", "cached_tokens")
 	case fmtGemini:
-		return asInt64(m.Usage["cachedContentTokenCount"])
+		return asInt64(m.Usage["cachedContentTokenCount"]) // protobuf JSON 省略零值：缺失就是 0
 	}
-	return -1
+	switch v.(type) {
+	case json.Number, float64:
+		return asInt64(v)
+	}
+	return -1 // 渠道没给这项统计：不能当成"零命中"
 }
 
 func cacheFinding(v *cacheVerdict, base finding) finding {

@@ -119,6 +119,7 @@ func (st *store) save(sum *summary, det *detail) {
 		detJSON = []byte(`{}`)
 	}
 	item := &storedSummary{summary: *sum, file: fmt.Sprintf("%013d-%s", sum.StartedAt.UnixMilli(), safeName(sum.ID))}
+	keepInMem := st.memOnly // 目录建得出来不代表写得进去（只读挂载、磁盘满）：写盘失败时同样留一份内存副本
 
 	if !st.memOnly {
 		var gz bytes.Buffer
@@ -129,14 +130,20 @@ func (st *store) save(sum *summary, det *detail) {
 		errBody := writeFileAtomic(base+".body.json.gz", gz.Bytes())
 		errSum := writeFileAtomic(base+".sum.json", sumJSON)
 		if errBody != nil || errSum != nil {
-			logf("persist %s failed: %v %v", sum.ID, errBody, errSum)
+			logf("persist %s failed, keeping detail in memory: %v %v", sum.ID, errBody, errSum)
+			keepInMem = true
 		}
-		item.size = int64(gz.Len() + len(sumJSON))
+		if errBody == nil { // 两个文件各写各的：只统计真正落盘的那部分，磁盘上限才按实际占用生效
+			item.size += int64(gz.Len())
+		}
+		if errSum == nil {
+			item.size += int64(len(sumJSON))
+		}
 	}
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if st.memOnly {
+	if keepInMem {
 		st.memDetails[sum.ID] = detJSON
 		st.memOrder = append(st.memOrder, sum.ID)
 		for len(st.memOrder) > memDetailRing {
@@ -144,7 +151,11 @@ func (st *store) save(sum *summary, det *detail) {
 			st.memOrder = st.memOrder[1:]
 		}
 	}
-	st.list = append(st.list, item)
+	// 记录按完成顺序到达，而 list 约定按开始时间升序（列表展示与"淘汰最旧"都依赖它）。
+	at := sort.Search(len(st.list), func(i int) bool { return st.list[i].StartedAt.After(item.StartedAt) })
+	st.list = append(st.list, nil)
+	copy(st.list[at+1:], st.list[at:])
+	st.list[at] = item
 	st.byID[item.ID] = item
 	st.diskBytes += item.size
 	st.pruneLocked()
@@ -191,6 +202,9 @@ func (st *store) load(id string) (*summary, json.RawMessage, error) {
 		if mem == nil {
 			mem = []byte(`{}`)
 		}
+		return &sum, mem, nil
+	}
+	if mem != nil {
 		return &sum, mem, nil
 	}
 	f, err := os.Open(filepath.Join(st.dir, "records", item.file+".body.json.gz"))
@@ -332,10 +346,14 @@ func (st *store) saveState(schemaJSON, findingsJSON []byte) {
 
 func writeFileAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
+	err := os.WriteFile(tmp, data, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, path)
 	}
-	return os.Rename(tmp, path)
+	if err != nil {
+		_ = os.Remove(tmp) // 失败时不留半成品：它不计入磁盘用量，也不会被淘汰逻辑清理
+	}
+	return err
 }
 
 func safeName(id string) string {

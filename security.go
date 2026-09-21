@@ -70,6 +70,11 @@ var sensitiveHeaders = map[string]bool{
 	"openai-organization": false,
 }
 
+func isSensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	return sensitiveHeaders[lower] || strings.Contains(lower, "token") || strings.Contains(lower, "secret")
+}
+
 // redactHeaders 返回脱敏后的头部副本：凭据类头部只保留首尾几位。
 func redactHeaders(h http.Header) map[string][]string {
 	if len(h) == 0 {
@@ -77,8 +82,7 @@ func redactHeaders(h http.Header) map[string][]string {
 	}
 	out := make(map[string][]string, len(h))
 	for name, values := range h {
-		lower := strings.ToLower(name)
-		masked := sensitiveHeaders[lower] || strings.Contains(lower, "token") || strings.Contains(lower, "secret")
+		masked := isSensitiveHeader(name)
 		copied := make([]string, len(values))
 		for i, v := range values {
 			if masked {
@@ -124,6 +128,26 @@ var secretPatterns = []secretPattern{
 }
 
 const maxSecretFindings = 8
+
+// pemBlock 覆盖整个私钥块。secretPatterns 里的 PEM 规则只匹配 BEGIN 行，够检测、不够打码；
+// 证据常被截断，缺 END 行时一直遮到文本末尾。
+var pemBlock = regexp.MustCompile(`-----BEGIN [A-Z ]{0,24}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]{0,24}PRIVATE KEY-----|$)`)
+
+// maskSecretsIn 把文本里命中机密模式的片段打码。发现项的证据来自请求 / 响应原文
+// （字段示例、工具入参…），聚合后长期留存，不能把机密原样带进去。
+func maskSecretsIn(text string) string {
+	if strings.Contains(text, "PRIVATE KEY-----") {
+		text = pemBlock.ReplaceAllStringFunc(text, func(block string) string {
+			return fmt.Sprintf("-----BEGIN PRIVATE KEY----- •••• (%d chars)", len(block))
+		})
+	}
+	for _, p := range secretPatterns {
+		if strings.Contains(text, string(p.literal)) {
+			text = p.re.ReplaceAllStringFunc(text, maskSecret)
+		}
+	}
+	return text
+}
 
 func scanSecrets(body []byte, base finding) []finding {
 	var out []finding
@@ -184,13 +208,25 @@ func normalizeModel(model string) string {
 	return strings.NewReplacer(".", "-", "_", "-").Replace(m)
 }
 
+// modelTier 匹配表示"另一档模型"的后缀词：gpt-4o 与 gpt-4o-mini 不是同一个模型。
+var modelTier = regexp.MustCompile(`(?:^|-)(?:mini|nano|lite|small|tiny|micro|flash|haiku|air|fast|turbo|max|pro|plus|ultra)(?:-|$)`)
+
+// sameModelFamily：一方是另一方的前缀、且多出来的后缀不含档位词时视为同一模型
+// （渠道常给模型名追加 -preview、-thinking、推理强度等后缀）。
+func sameModelFamily(a, b string) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a) && !modelTier.MatchString(b[len(a):])
+}
+
 // checkModel 比较"发往上游的模型"与"上游自报的模型"。返回 nil 表示一致。
 func checkModel(requested, reported string, base finding) *finding {
 	if requested == "" || reported == "" {
 		return nil
 	}
 	a, b := normalizeModel(requested), normalizeModel(reported)
-	if a == b || strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
+	if a == b || sameModelFamily(a, b) {
 		return nil
 	}
 	f := base

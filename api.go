@@ -426,7 +426,11 @@ func (ins *inspector) apiSchema() map[string]any {
 		views = append(views, view)
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Scope < views[j].Scope })
-	return map[string]any{"scopes": views, "learn_samples": ins.cfg.LearnSamples, "models": ins.schema.Models}
+	models := make(map[string]time.Time, len(ins.schema.Models))
+	for name, first := range ins.schema.Models { // 返回值在解锁后才序列化，不能把共享 map 交出去
+		models[name] = first
+	}
+	return map[string]any{"scopes": views, "learn_samples": ins.cfg.LearnSamples, "models": models}
 }
 
 func copyCounts(m map[string]int) map[string]int {

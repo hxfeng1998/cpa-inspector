@@ -21,6 +21,10 @@ const (
 	shapeMaxDepth = 14
 	shapeMaxPaths = 1500
 	shapeMaxKeys  = 64
+	// 字段图谱常驻内存并整体落盘，字段名 / 事件名又来自不可信的上游：给累计量设上限，满了就不再收新条目。
+	schemaMaxScopes = 512
+	schemaMaxFields = 8192
+	recentReqCap    = 64
 )
 
 var opaqueKeys = map[string]bool{
@@ -279,8 +283,8 @@ type scopeStat struct {
 	Requests     int            `json:"requests"`     // 请求数：学习期按它计（一个流有上百个事件）
 	Models       map[string]int `json:"models"`
 	// ModelRequests 为各模型贡献的请求数，用作"该模型是否已观测充分"的门槛。
-	ModelRequests map[string]int `json:"model_requests"`
-	lastReqID     string
+	ModelRequests map[string]int        `json:"model_requests"`
+	recentReqs    []string              // 最近计过数的请求 ID：并发流的事件交错到达，只记上一个 ID 会重复计数
 	Fields        map[string]*fieldStat `json:"fields"`
 	FirstSeen     time.Time             `json:"first_seen"`
 	LastSeen      time.Time             `json:"last_seen"`
@@ -290,6 +294,7 @@ type schemaStore struct {
 	Scopes map[string]*scopeStat `json:"scopes"`
 	Models map[string]time.Time  `json:"models"` // 见过的模型 → 首次出现时间
 	dirty  bool
+	warned bool
 }
 
 func newSchemaStore() *schemaStore {
@@ -324,11 +329,14 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 	var events []driftEvent
 	sc := s.Scopes[scope]
 	if sc == nil {
+		if len(s.Scopes) >= schemaMaxScopes {
+			s.warnFull("scope 数已达上限 " + strconv.Itoa(schemaMaxScopes))
+			return nil
+		}
 		sc = &scopeStat{Models: make(map[string]int), ModelRequests: make(map[string]int), Fields: make(map[string]*fieldStat), FirstSeen: now}
 		s.Scopes[scope] = sc
 	}
-	if reqID == "" || reqID != sc.lastReqID {
-		sc.lastReqID = reqID
+	if reqID == "" || !sc.sawRequest(reqID) {
 		sc.Requests++
 		if model != "" {
 			sc.ModelRequests[model]++
@@ -346,6 +354,10 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 	for _, e := range entries {
 		f := sc.Fields[e.Path]
 		if f == nil {
+			if len(sc.Fields) >= schemaMaxFields {
+				s.warnFull(scope + " 的字段数已达上限 " + strconv.Itoa(schemaMaxFields))
+				continue
+			}
 			f = &fieldStat{Types: make(map[string]int), Models: make(map[string]int), FirstSeen: now, FirstReqID: reqID, Baseline: learning, Example: e.Example}
 			sc.Fields[e.Path] = f
 			if !learning {
@@ -400,6 +412,20 @@ func (s *schemaStore) observe(scope, model, reqID string, entries []shapeEntry, 
 	return collapseDrift(events, newPaths)
 }
 
+// sawRequest 报告该请求是否已在本 scope 计过数，没有则记下。
+func (sc *scopeStat) sawRequest(reqID string) bool {
+	for _, id := range sc.recentReqs {
+		if id == reqID {
+			return true
+		}
+	}
+	if len(sc.recentReqs) >= recentReqCap {
+		sc.recentReqs = sc.recentReqs[1:]
+	}
+	sc.recentReqs = append(sc.recentReqs, reqID)
+	return false
+}
+
 // contentDependent 报告路径是否取决于对话内容：数组元素（content[]…）与以 ID 为键的映射条目（items.{ctco_*}…）。
 // 它们出现与否由对话里有没有对应的块 / 工具调用决定，不能拿"出现率"判断缺失。
 func contentDependent(path string) bool {
@@ -437,6 +463,13 @@ func hasNewAncestor(path string, newPaths map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+func (s *schemaStore) warnFull(what string) {
+	if !s.warned {
+		s.warned = true
+		logf("schema store full: %s；新条目不再收录（可在界面清空字段图谱）", what)
+	}
 }
 
 // observeModel 记录模型名，首次出现时返回 true。

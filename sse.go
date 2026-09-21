@@ -403,12 +403,16 @@ func (m *message) feedChat(obj map[string]any) {
 		if s, ok := part["refusal"].(string); ok && s != "" {
 			m.tailBlock("refusal").appendText(s)
 		}
-		for _, tc := range asSlice(part["tool_calls"]) {
+		for pos, tc := range asSlice(part["tool_calls"]) {
 			call, ok := tc.(map[string]any)
 			if !ok {
 				continue
 			}
-			key := fmt.Sprintf("%d/%d", asInt(choice["index"]), asInt(call["index"]))
+			callIndex := pos // 非流式的 message.tool_calls[] 不带 index，按数组位置区分
+			if _, has := call["index"]; has {
+				callIndex = asInt(call["index"])
+			}
+			key := fmt.Sprintf("%d/%d", asInt(choice["index"]), callIndex)
 			if m.chatTools == nil {
 				m.chatTools = make(map[string]*block)
 			}
