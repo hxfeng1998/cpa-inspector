@@ -141,6 +141,7 @@ type detail struct {
 	Attempts        []attempt           `json:"attempts,omitempty"`
 	Usages          []usageInfo         `json:"usages,omitempty"`
 	Metadata        map[string]string   `json:"metadata,omitempty"`
+	Rewrites        []string            `json:"rewrites,omitempty"` // 本插件对请求体做的改写（rewrite_env_timezone）
 }
 
 // record 是一个在途请求的全部状态。
@@ -148,6 +149,7 @@ type record struct {
 	sum         summary
 	det         detail
 	clientBody  []byte
+	sentBody    []byte // 本插件改写后交给宿主的请求体；nil 表示未改写
 	upBody      []byte
 	upBodySize  int
 	upFormat    string
@@ -171,6 +173,7 @@ type inspector struct {
 	findDirty bool
 	store     *store
 	sessions  *sessionTracker
+	env       *envRewriter
 	started   time.Time
 	stats     struct{ Requests, UpstreamChunks, DownstreamChunks, Orphans int64 }
 	stop      chan struct{}
@@ -197,12 +200,18 @@ func configureInspector(cfg config) {
 		dirChanged := global.cfg.DataDir != cfg.DataDir
 		global.cfg = cfg
 		global.mu.Unlock()
+		global.env.configure(cfg.RewriteEnvTimezone)
 		if !dirChanged {
 			global.store.setLimits(cfg.MaxRecords, int64(cfg.MaxDiskMB)<<20)
 			return
 		}
 		global.shutdown()
 	}
+	env := newEnvRewriter()
+	if global != nil {
+		env = global.env // 换数据目录不影响已钉住的改写结果
+	}
+	env.configure(cfg.RewriteEnvTimezone)
 	ins := &inspector{
 		cfg:      cfg,
 		active:   make(map[string]*record),
@@ -211,6 +220,7 @@ func configureInspector(cfg config) {
 		findings: make(map[string]*aggFinding),
 		store:    openStore(cfg.DataDir, cfg.MaxRecords, int64(cfg.MaxDiskMB)<<20),
 		sessions: newSessionTracker(),
+		env:      env,
 		started:  time.Now(),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -219,7 +229,7 @@ func configureInspector(cfg config) {
 	ins.findDirty = true // 迁移可能清掉了旧发现项：下一次落盘时写回
 	go ins.loop()
 	global = ins
-	logf("ready: data_dir=%s capture_upstream=%v records=%d", cfg.DataDir, cfg.CaptureUpstream, ins.store.count())
+	logf("ready: data_dir=%s capture_upstream=%v rewrite_env_timezone=%q records=%d", cfg.DataDir, cfg.CaptureUpstream, cfg.RewriteEnvTimezone, ins.store.count())
 }
 
 func flushInspector() {
@@ -386,7 +396,7 @@ func (ins *inspector) matchUpstream(req *normalizeRequest) *record {
 		// 只在有歧义时付出这份开销；请求体完全相同（或都对不上）时仍取最新的在途请求。
 		if len(live) > 1 {
 			for _, rec := range live {
-				if b64Equal(req.OriginalB64, rec.clientBody) {
+				if b64Equal(req.OriginalB64, rec.clientBody) || (rec.sentBody != nil && b64Equal(req.OriginalB64, rec.sentBody)) {
 					return rec
 				}
 			}
@@ -443,7 +453,8 @@ func (ins *inspector) onRequest(req *requestInterceptRequest, afterAuth bool) {
 		s.Model = req.Model
 	}
 	ins.absorbMetadata(rec, req.Metadata)
-	if len(req.Body) > 0 && !bytes.Equal(req.Body, rec.clientBody) {
+	// 选定凭据后宿主传来的是本插件改写过的请求体：客户端原文保持不变
+	if len(req.Body) > 0 && !bytes.Equal(req.Body, rec.clientBody) && !(afterAuth && rec.sentBody != nil && bytes.Equal(req.Body, rec.sentBody)) {
 		rec.clientBody = req.Body
 		s.RequestBytes = len(req.Body)
 		ins.addPrint(rec, req.Body)
@@ -463,6 +474,24 @@ func (ins *inspector) onRequest(req *requestInterceptRequest, afterAuth bool) {
 	if len(rec.det.Attempts) < 16 {
 		rec.det.Attempts = append(rec.det.Attempts, attempt{T: now.Sub(s.StartedAt).Milliseconds(), ToFormat: req.ToFormat, Model: req.Model, Headers: redactHeaders(req.Headers)})
 	}
+}
+
+// onRewrittenRequest 记录一次 request.intercept_before：客户端原文照常抓取，另记下改写后的请求体。
+// 宿主会把改写结果同时当作 OriginalRequest 传给 normalize_before，所以两份都要登记指纹。
+func (ins *inspector) onRewrittenRequest(req *requestInterceptRequest, sent []byte, notes []string) {
+	ins.onRequest(req, false)
+	if req.RequestID == "" {
+		return
+	}
+	ins.mu.Lock()
+	defer ins.mu.Unlock()
+	rec := ins.active[req.RequestID]
+	if rec == nil {
+		return
+	}
+	rec.sentBody = sent
+	rec.det.Rewrites = notes
+	ins.addPrint(rec, sent)
 }
 
 func (ins *inspector) absorbMetadata(rec *record, meta map[string]any) {

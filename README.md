@@ -5,7 +5,7 @@
 - **这条渠道可信吗？** 第三方中转有没有偷换模型、往响应里注入工具调用、截断响应、虚报 token；我自己有没有把密钥随上下文发出去。
 - **上游是不是悄悄变了？** 为每种协议、每种流事件、每个模型建立字段基线，之后任何新增字段、新枚举值、类型变化、必现字段消失、新响应头都会被报告——模型进入灰测、渠道切换后端，通常最先体现在这里。
 
-插件**只观察、不改写**：所有钩子都返回"不修改"，内部错误与 panic 会被吞掉，不影响代理转发。
+插件默认**只观察、不改写**：所有钩子都返回"不修改"，内部错误与 panic 会被吞掉，不影响代理转发。唯一的例外是可选的 [`rewrite_env_timezone`](#改写-codex-的时区与日期)，需要显式配置才会改写请求体。
 
 ![概览](docs/screenshots/overview.png)
 
@@ -14,6 +14,7 @@
 - [功能一览](#功能一览)
 - [安装](#安装)
 - [配置项](#配置项)
+- [改写 Codex 的时区与日期](#改写-codex-的时区与日期)
 - [检查项](#检查项)
 - [字段漂移是怎么判定的](#字段漂移是怎么判定的)
 - [能看到什么，看不到什么](#能看到什么看不到什么)
@@ -164,6 +165,28 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | `max_body_mb` | `8` | 单个请求 / 响应体的保存上限，超出部分只分析、不保存 |
 | `learn_samples` | `30` | 基线学习样本数：每个作用域的前 N 个请求只学习、不报告 |
 | `scan_secrets` | `true` | 扫描请求体里的密钥、私钥、带口令的连接串 |
+| `rewrite_env_timezone` | 空（不改写） | IANA 时区名，如 `America/Los_Angeles`。把 Codex 请求里 `<environment_context>` 的时区与日期改写成该时区，见[下文](#改写-codex-的时区与日期)。填错时区名会导致插件加载失败 |
+
+## 改写 Codex 的时区与日期
+
+Codex 每个会话都会在 `input` 里带一条 user 消息，开头是 `<environment_context>`，里面有客户端本地的日期与时区：
+
+```xml
+<environment_context>
+  <cwd>/root/code</cwd>
+  <shell>bash</shell>
+  <current_date>2026-09-25</current_date>
+  <timezone>Asia/Shanghai</timezone>
+  ...
+</environment_context>
+```
+
+配置 `rewrite_env_timezone: America/Los_Angeles` 后，插件在 `request.intercept_before`（翻译和选凭据之前）把 `<timezone>` 换成目标时区，并把 `<current_date>` 换成该时区对应的日期，改写后的请求体再交给宿主发往渠道。
+
+- **只改这一段**：只认 user 消息里以 `<environment_context>` 开头的文本块，按 JSON 字符串原样替换，请求体其余字节不变。工具输出、对话正文里出现的同名标签不会被改。没有 `<timezone>` 或已是目标时区的不改。
+- **日期怎么换算**：某段 environment_context 在一个会话里第一次出现时换算一次——原日期是客户端时区的"今天"，就取目标时区的当前日期；更早的日期按那天正午换算。之后这个会话每一轮都复用同一结果，历史消息的字节不会因为跨过零点而变化，不会破坏前缀缓存。换算结果只在内存里（保留 72 小时），插件重启后按重启时的时间重新换算，跨日的旧会话可能因此多丢一次缓存。
+- **在哪里看**：请求详情的「① 客户端请求」保留客户端原文，并列出这次做了哪些改写；「② 发往上游」是改写后的版本。
+- 只改写经 CPA 转发的请求体；客户端本身的时区，以及其他会暴露时间的内容（如工具输出里的 `date` 结果）不受影响。
 
 ## 检查项
 
@@ -316,6 +339,7 @@ bash traffic.sh
 | `abi.go` | C ABI 导出（唯一的 cgo 文件） |
 | `rpc.go` | RPC 结构体镜像、方法分发、注册信息。自行声明结构体而不 import 宿主模块，避免拉入整个 CPA 依赖树 |
 | `config.go` | 配置解析；`normalize_before` 入参的快速解析 |
+| `envctx.go` | `rewrite_env_timezone`：改写 Codex `<environment_context>` 的时区与日期 |
 | `capture.go` | 各钩子处理、请求关联（指纹 / usage）、发现项聚合 |
 | `finalize.go` | 请求结束后的后台分析与落盘 |
 | `sse.go` | SSE 解析与消息重组，按载荷特征自动识别协议 |

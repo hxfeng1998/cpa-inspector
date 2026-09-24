@@ -231,7 +231,7 @@ func (ins *inspector) finalize(rec *record, cfg config) {
 	}
 
 	// 3) 无锁阶段：落盘。
-	rec.clientBody, rec.upBody = nil, nil
+	rec.clientBody, rec.sentBody, rec.upBody = nil, nil, nil
 	ins.store.save(&rec.sum, &rec.det)
 }
 

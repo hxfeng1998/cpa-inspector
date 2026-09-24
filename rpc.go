@@ -17,7 +17,7 @@ const (
 	pluginID = "cpa-inspector"
 	// schemaVersion 取 6：流式分片不再重复携带请求体/历史分片，management JSON 响应不做 HTML 转义。
 	schemaVersion = 6
-	pluginVersion = "0.1.8"
+	pluginVersion = "0.1.9"
 	repoURL       = "https://github.com/hxfeng1998/cpa-inspector"
 
 	methodPluginRegister          = "plugin.register"
@@ -214,10 +214,16 @@ type managementResponse struct {
 	Body       []byte
 }
 
+// requestInterceptResult 对应宿主 pluginapi.RequestInterceptResponse；Body 非空时替换请求体。
+type requestInterceptResult struct {
+	Body []byte
+}
+
 var emptyResult = []byte(`{"ok":true,"result":{}}`)
 
-// dispatch 是所有宿主调用的唯一入口。抓取类钩子永远返回"不修改"的空结果：
-// 本插件只观察、不改写，任何内部错误或 panic 都不能影响代理转发。
+// dispatch 是所有宿主调用的唯一入口。抓取类钩子返回"不修改"的空结果；唯一的例外是配置了
+// rewrite_env_timezone 时，request.intercept_before 会返回改写过 environment_context 的请求体。
+// 任何内部错误或 panic 都不能影响代理转发。
 func dispatch(method string, request []byte) (out []byte) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -266,6 +272,12 @@ func dispatch(method string, request []byte) (out []byte) {
 	case methodRequestInterceptBefore, methodRequestInterceptAfter:
 		var req requestInterceptRequest
 		if err := json.Unmarshal(request, &req); err == nil {
+			if method == methodRequestInterceptBefore {
+				if body, notes := ins.env.rewrite(req.Body, req.Headers); body != nil {
+					ins.onRewrittenRequest(&req, body, notes)
+					return okEnvelope(requestInterceptResult{Body: body})
+				}
+			}
 			ins.onRequest(&req, method == methodRequestInterceptAfter)
 		}
 	case methodResponseNormalizeBefore:
@@ -320,6 +332,7 @@ func buildRegistration(cfg config) registration {
 				{Name: "max_body_mb", Type: "integer", Description: "单个请求/响应体保留上限（MB），超出部分只分析不保存。"},
 				{Name: "learn_samples", Type: "integer", Description: "字段基线学习样本数：某作用域观测满该数量后，新出现的字段才会被报告为漂移。"},
 				{Name: "scan_secrets", Type: "boolean", Description: "扫描发往上游的请求体中是否含密钥/私钥/带口令的连接串。"},
+				{Name: "rewrite_env_timezone", Type: "string", Description: "把 Codex 请求里 <environment_context> 的时区与日期改写为该 IANA 时区（如 America/Los_Angeles）；留空不改写。"},
 			},
 		},
 		Capabilities: capabilities{

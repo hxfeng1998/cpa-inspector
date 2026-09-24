@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +19,8 @@ type config struct {
 	MaxBodyMB       int    `yaml:"max_body_mb" json:"max_body_mb"`
 	LearnSamples    int    `yaml:"learn_samples" json:"learn_samples"`
 	ScanSecrets     bool   `yaml:"scan_secrets" json:"scan_secrets"`
+	// RewriteEnvTimezone 非空时，把 Codex 请求里 <environment_context> 的时区与日期改写为该 IANA 时区。
+	RewriteEnvTimezone string `yaml:"rewrite_env_timezone" json:"rewrite_env_timezone"`
 }
 
 func defaultConfig() config {
@@ -47,6 +50,13 @@ func parseConfig(raw []byte) (config, error) {
 	cfg.MaxDiskMB = clampInt(cfg.MaxDiskMB, 16, 1<<20)
 	cfg.MaxBodyMB = clampInt(cfg.MaxBodyMB, 1, 256)
 	cfg.LearnSamples = clampInt(cfg.LearnSamples, 1, 100000)
+	cfg.RewriteEnvTimezone = strings.TrimSpace(cfg.RewriteEnvTimezone)
+	if cfg.RewriteEnvTimezone != "" {
+		// 拒绝 Local：它取决于宿主进程的时区，与"改写成指定时区"的意图不符
+		if _, err := time.LoadLocation(cfg.RewriteEnvTimezone); err != nil || cfg.RewriteEnvTimezone == "Local" {
+			return cfg, fmt.Errorf("rewrite_env_timezone: unknown IANA time zone %q", cfg.RewriteEnvTimezone)
+		}
+	}
 	return cfg, nil
 }
 

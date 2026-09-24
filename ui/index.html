@@ -724,13 +724,14 @@ async function openRecord(id) {
     creq: legPanel(() => [
       section("请求", "", startLine((su.path || "(未知路径)") + "  ·  " + (su.source_format || "?") + " 协议  ·  模型 " + (su.requested_model || "?"))),
       section("Headers", de.client_headers ? Object.keys(de.client_headers).length + " 项 · 凭据类已脱敏" : "", headersTable(de.client_headers, "未抓到请求头")),
+      (de.rewrites || []).length ? section("插件改写", "rewrite_env_timezone · 下方 Body 是客户端原文，发往上游的是改写后的版本", h("ul", { style: "margin:0;padding-left:18px" }, de.rewrites.map((x) => h("li", { class: "mono" }, "environment_context：" + x)))) : null,
       requestBody(de.client_request, "client_request", "无请求体")]),
     ureq: legPanel(() => [
       section("请求", "", startLine((lastUsage?.base_url || su.channel || "(渠道未知)") + "  ·  " + (su.to_format || "?") + " 协议  ·  模型 " + (su.model || "?")),
         h("div", { class: "kv", style: "margin-top:12px" }, kv("Provider", su.provider), kv("凭据", su.auth_id, true), kv("凭据类型", lastUsage?.auth_type), kv("尝试次数", su.attempts))),
       section("Headers", "", h("div", { class: "muted" }, "宿主的执行器在内部拼装发往渠道的请求头（渠道密钥、伪装头等），插件接口不暴露这一层，所以这里无法展示。"),
         (de.attempts || []).some((a) => a.headers && !sameHeaders(a.headers, de.client_headers)) ? [h("h3", { style: "margin:14px 0 6px" }, "选定凭据后、交给执行器的头部提示（与客户端请求头不同）"), (de.attempts || []).map((a) => headersTable(a.headers))] : null),
-      requestBody(de.upstream_request, "upstream_request", passthrough ? "同协议直通：宿主不经过翻译层，发往上游的请求体即「① 客户端请求」的请求体（执行器可能再附加少量伪装字段，插件接口不暴露）。" : "未抓取（需开启 capture_upstream，且请求需到达上游）")]),
+      requestBody(de.upstream_request, "upstream_request", passthrough ? "同协议直通：宿主不经过翻译层，发往上游的请求体即「① 客户端请求」的请求体（执行器可能再附加少量伪装字段，插件接口不暴露）" + ((de.rewrites || []).length ? "，另有本插件对 environment_context 的改写，见「① 客户端请求」。" : "。") : "未抓取（需开启 capture_upstream，且请求需到达上游）")]),
     uresp: legPanel(() => responseParts(de.upstream_response, "upstream_response",
       lastUsage ? "HTTP " + (lastUsage.failed ? lastUsage.failure_status || "失败" : 200) + (lastUsage.ttft_ms ? "  ·  首 token " + ms(lastUsage.ttft_ms) : "") + "  ·  总耗时 " + ms(lastUsage.latency_ms) : "(无 usage 记录)",
       lastUsage?.response_headers, "宿主未提供上游响应头",
