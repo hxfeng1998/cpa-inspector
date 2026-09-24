@@ -70,6 +70,13 @@ func (w *shapeWalker) add(path, typ, example string) {
 	w.out = append(w.out, shapeEntry{Path: path, Type: typ, Example: example})
 }
 
+// shapeExample 截取字符串字段的示例。示例会长期留在字段图谱里（清空请求记录也不会带走），
+// 所以先在一个足够容纳整把常见密钥的窗口内打码再截断，截断后再遮一遍残缺的机密前缀
+// （窗口也装不下的长 JWT 等）。
+func shapeExample(s string) string {
+	return maskExample(truncate(maskSecretsIn(truncate(s, 512)), 96))
+}
+
 func (w *shapeWalker) walk(v any, path string, depth int) {
 	switch t := v.(type) {
 	case nil:
@@ -81,7 +88,7 @@ func (w *shapeWalker) walk(v any, path string, depth int) {
 	case float64:
 		w.add(path, "number", strconv.FormatFloat(t, 'g', -1, 64))
 	case string:
-		w.add(path, "string", truncate(t, 96))
+		w.add(path, "string", shapeExample(t))
 	case []any:
 		w.add(path, "array", "["+strconv.Itoa(len(t))+"]")
 		if depth >= shapeMaxDepth {

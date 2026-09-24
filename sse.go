@@ -19,6 +19,9 @@ const (
 	fmtUnknown   = "unknown"
 
 	blockTextCap = 256 << 10
+	// reassembleFactor：单个方向的流累计超过 max_body_mb 的这么多倍后停止重组。
+	// 重组状态（块、异常、事件计数）随上游输入增长，不设总量上限时异常流可以无限占用宿主内存。
+	reassembleFactor = 8
 )
 
 // sseEvent 是从一个分片里解析出的单个事件。
@@ -102,6 +105,7 @@ type message struct {
 	Echo        *requestEcho   `json:"echo,omitempty"`       // 上游回显的实际生效请求参数（Responses 协议）
 	EchoDiff    []echoDiff     `json:"echo_diff,omitempty"`  // 回显与发出请求的差异
 	EchoBasis   string         `json:"echo_basis,omitempty"` // 比对基准：upstream（CPA 实际发往上游的请求体）| client
+	Overflow    bool           `json:"overflow,omitempty"`   // 流过大，重组中途停止：内容不完整，不做完整性检查
 
 	claudeBlocks map[int]*block // content_block index → block
 	chatTools    map[string]*block
@@ -113,20 +117,32 @@ func newMessage() *message {
 	return &message{Format: fmtUnknown, EventCounts: make(map[string]int)}
 }
 
+// appendText / appendInput 超出上限时保留能放下的前缀：整段丢弃会让一次性给出的
+// 大入参（非流式、Responses 终态对象）变成空串，后续的工具调用检查就什么也看不到。
 func (b *block) appendText(s string) {
-	if len(b.Text)+len(s) > blockTextCap {
-		b.Truncated = true
-		return
-	}
-	b.Text += s
+	b.Text = appendCapped(b, b.Text, s)
 }
 
 func (b *block) appendInput(s string) {
-	if len(b.Input)+len(s) > blockTextCap {
-		b.Truncated = true
-		return
+	b.Input = appendCapped(b, b.Input, s)
+}
+
+func appendCapped(b *block, cur, s string) string {
+	if b.Truncated {
+		return cur
 	}
-	b.Input += s
+	if len(cur)+len(s) <= blockTextCap {
+		return cur + s
+	}
+	b.Truncated = true
+	cut := blockTextCap - len(cur)
+	if cut <= 0 {
+		return cur
+	}
+	for cut > 0 && s[cut]&0xC0 == 0x80 { // 不切断 UTF-8 多字节序列
+		cut--
+	}
+	return cur + s[:cut]
 }
 
 func (m *message) setExtra(key string, v any) {
@@ -637,7 +653,7 @@ func (m *message) feedGemini(obj map[string]any) {
 // finish 在请求结束时做协议完整性检查。succeeded 为 false（失败/取消）时不检查截断。
 // upstream 标明方向：个别结束哨兵只在上游一侧可见。
 func (m *message) finish(stream, succeeded, upstream bool) {
-	if !succeeded || m.Error != "" {
+	if !succeeded || m.Error != "" || m.Overflow {
 		return
 	}
 	switch m.Format {

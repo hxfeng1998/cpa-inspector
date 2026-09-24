@@ -704,7 +704,7 @@ async function openRecord(id) {
     const rawText = () => cap.document ? (cap.document.json !== undefined ? JSON.stringify(cap.document.json, null, 2) : cap.document.text || "") : (cap.events || []).map((ev) => (ev.name && ev.name !== "(data)" && ev.name !== "[DONE]" ? "event: " + ev.name + "\n" : "") + "data: " + (ev.json !== undefined ? JSON.stringify(ev.json) : ev.text) + "\n").join("\n");
     views.push(["原文", () => rawView(rawText())]);
     return [
-      section("状态", "", startLine(status), h("div", { class: "kv", style: "margin-top:12px" }, kv("协议", cap.format || m.format), kv("消息 ID", m.id, true), kv("自报模型", m.model, true), kv("结束原因", m.stop_reason), kv("分片 / 字节", cap.chunks + " / " + bytes(cap.bytes)), kv("首片 / 末片", ms(cap.first_ms) + " / " + ms(cap.last_ms)), kv("完整结束", m.done ? "是" : "否")),
+      section("状态", "", startLine(status), h("div", { class: "kv", style: "margin-top:12px" }, kv("协议", cap.format || m.format), kv("消息 ID", m.id, true), kv("自报模型", m.model, true), kv("结束原因", m.stop_reason), kv("分片 / 字节", cap.chunks + " / " + bytes(cap.bytes)), kv("首片 / 末片", ms(cap.first_ms) + " / " + ms(cap.last_ms)), kv("完整结束", m.overflow ? "未知（流过大，重组中途停止）" : m.done ? "是" : "否")),
         (m.issues || []).length ? h("div", { class: "chips", style: "margin-top:12px" }, m.issues.map((x) => sev("warn", x))) : null),
       section("Headers", headers ? Object.keys(headers).length + " 项" : "", headersTable(headers, headersNote)),
       echoSection(m),

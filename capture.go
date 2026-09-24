@@ -284,7 +284,13 @@ func (ins *inspector) flushState() {
 		ins.findDirty = false
 	}
 	ins.mu.Unlock()
-	ins.store.saveState(schemaJSON, findingsJSON)
+	schemaOK, findingsOK := ins.store.saveState(schemaJSON, findingsJSON)
+	if !schemaOK || !findingsOK { // 写盘失败：恢复待写标记，下个周期重试
+		ins.mu.Lock()
+		ins.schema.dirty = ins.schema.dirty || !schemaOK
+		ins.findDirty = ins.findDirty || !findingsOK
+		ins.mu.Unlock()
+	}
 }
 
 // ---------- 请求指纹：response.normalize_before 不带 RequestID，靠原始请求体指纹关联 ----------
@@ -315,6 +321,25 @@ func fingerprintBody(body []byte) string {
 	}
 	tailStart := 3*((n+2)/3) - printTail/4*3
 	return strconv.Itoa(total) + ":" + enc.EncodeToString(body[:printHead/4*3]) + enc.EncodeToString(body[tailStart:])
+}
+
+// b64Equal 判断 b64 是否恰为 raw 的标准 base64 编码：分段编码后逐段比较，不分配整份副本。
+func b64Equal(b64, raw []byte) bool {
+	enc := base64.StdEncoding
+	if len(raw) == 0 || len(b64) != enc.EncodedLen(len(raw)) {
+		return false
+	}
+	var buf [4096]byte
+	const step = len(buf) / 4 * 3
+	for off := 0; off < len(raw); off += step {
+		part := raw[off:min(off+step, len(raw))]
+		n := enc.EncodedLen(len(part))
+		enc.Encode(buf[:n], part)
+		if !bytes.Equal(buf[:n], b64[off/3*4:off/3*4+n]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (ins *inspector) addPrint(rec *record, body []byte) {
@@ -351,10 +376,23 @@ func (ins *inspector) dropPrints(rec *record) {
 // matchUpstream 为一个无 RequestID 的上游分片找到所属请求。
 func (ins *inspector) matchUpstream(req *normalizeRequest) *record {
 	if ids := ins.byPrint[fingerprintB64(req.OriginalB64)]; len(ids) > 0 {
-		for i := len(ids) - 1; i >= 0; i-- { // 同体并发请求时取最新的在途请求
+		var live []*record
+		for i := len(ids) - 1; i >= 0; i-- {
 			if rec := ins.active[ids[i]]; rec != nil && !rec.completed {
-				return rec
+				live = append(live, rec)
 			}
+		}
+		// 指纹只取长度+首尾，中段不同的等长请求会撞上：多个在途候选时再比对完整请求体。
+		// 只在有歧义时付出这份开销；请求体完全相同（或都对不上）时仍取最新的在途请求。
+		if len(live) > 1 {
+			for _, rec := range live {
+				if b64Equal(req.OriginalB64, rec.clientBody) {
+					return rec
+				}
+			}
+		}
+		if len(live) > 0 {
+			return live[0]
 		}
 		if rec := ins.active[ids[len(ids)-1]]; rec != nil {
 			return rec
@@ -416,6 +454,12 @@ func (ins *inspector) onRequest(req *requestInterceptRequest, afterAuth bool) {
 	}
 	s.ToFormat = req.ToFormat
 	s.Attempts++
+	if s.Attempts > 1 {
+		// 新一次尝试：上一次尝试的上游请求体与响应重组状态作废，否则最终分析会拿新响应去比旧请求、
+		// 把两次尝试的流混在一起。上一次的失败信息仍保留在 usages 与 attempts 里。
+		rec.upBody, rec.upBodySize, rec.upFormat = nil, 0, ""
+		rec.det.Upstream, rec.wsUp = nil, nil
+	}
 	if len(rec.det.Attempts) < 16 {
 		rec.det.Attempts = append(rec.det.Attempts, attempt{T: now.Sub(s.StartedAt).Milliseconds(), ToFormat: req.ToFormat, Model: req.Model, Headers: redactHeaders(req.Headers)})
 	}
@@ -597,8 +641,11 @@ func (ins *inspector) absorb(rec *record, c *capture, direction, hostFormat, mod
 		return
 	}
 
+	if c.Message != nil && c.Bytes > budget*reassembleFactor {
+		c.Message.Overflow = true
+	}
 	for _, ev := range c.parser.parse(body) {
-		if c.Message != nil {
+		if c.Message != nil && !c.Message.Overflow {
 			c.Message.feed(ev)
 			c.Format = c.Message.Format
 		}

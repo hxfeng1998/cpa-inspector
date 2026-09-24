@@ -133,6 +133,16 @@ const maxSecretFindings = 8
 // 证据常被截断，缺 END 行时一直遮到文本末尾。
 var pemBlock = regexp.MustCompile(`-----BEGIN [A-Z ]{0,24}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]{0,24}PRIVATE KEY-----|$)`)
 
+// secretPrefix 匹配以已知机密前缀开头、但不一定完整的 token。字段示例只保留前 96 字节，
+// 被截断的半截密钥（或超出打码窗口的长 JWT）已认不出完整形态，但仍是密钥的一部分。
+// 示例只用于展示，宁可多遮。
+var secretPrefix = regexp.MustCompile(`\b(?:sk-|AKIA|gh[pousr]_|github_pat_|AIza|xox[baprs]-|[sr]k_live_|eyJ)[A-Za-z0-9_\-.]{4,}|\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?)://[^\s:/@"'\\]{1,64}:[^\s@"'\\]+`)
+
+// maskExample 给要长期留存的示例文本打码：完整机密按常规规则遮盖，残缺的机密前缀也一并遮盖。
+func maskExample(text string) string {
+	return secretPrefix.ReplaceAllStringFunc(maskSecretsIn(text), maskSecret)
+}
+
 // maskSecretsIn 把文本里命中机密模式的片段打码。发现项的证据来自请求 / 响应原文
 // （字段示例、工具入参…），聚合后长期留存，不能把机密原样带进去。
 func maskSecretsIn(text string) string {
@@ -387,6 +397,9 @@ func checkClaudeFingerprint(msg *message, base finding) []finding {
 	var out []finding
 	unsigned := false
 	for _, b := range msg.Blocks {
+		if msg.Overflow { // 重组中途停止：签名可能在没采集的尾部里，不能据此判缺失
+			break
+		}
 		if b.Type == "thinking" && b.SignatureLen == 0 && b.Text != "" {
 			unsigned = true
 			f := base
@@ -430,7 +443,7 @@ func idForm(id string) string {
 // fingerprintEntries 提取"后端指纹"，按渠道并入字段图谱：形态一旦变化（换后端、开始/停止重写 ID、
 // thinking 签名从有到无）就会以漂移报告。这比写死"官方应该长什么样"可靠。
 func fingerprintEntries(msg *message) []shapeEntry {
-	if msg == nil || msg.Error != "" {
+	if msg == nil || msg.Error != "" || msg.Overflow { // 重组不完整的消息不进指纹基线
 		return nil
 	}
 	var out []shapeEntry

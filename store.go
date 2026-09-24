@@ -39,6 +39,7 @@ type store struct {
 	diskBytes  int64
 	memDetails map[string][]byte
 	memOrder   []string
+	stateErr   string // 上一次状态落盘的错误：失败后每个周期都会重试，同样的错误只记一次日志
 }
 
 func openStore(dir string, maxRecords int, maxBytes int64) *store {
@@ -189,15 +190,13 @@ func (st *store) summaries() []summary {
 func (st *store) load(id string) (*summary, json.RawMessage, error) {
 	st.mu.Lock()
 	item := st.byID[id]
-	var mem []byte
-	if item != nil {
-		mem = st.memDetails[id]
-	}
-	st.mu.Unlock()
 	if item == nil {
+		st.mu.Unlock()
 		return nil, nil, os.ErrNotExist
 	}
-	sum := item.summary
+	mem := st.memDetails[id]
+	sum, file := item.summary, item.file // 锁内取快照：patchUsage 会并发改写同一条摘要
+	st.mu.Unlock()
 	if st.memOnly {
 		if mem == nil {
 			mem = []byte(`{}`)
@@ -207,7 +206,7 @@ func (st *store) load(id string) (*summary, json.RawMessage, error) {
 	if mem != nil {
 		return &sum, mem, nil
 	}
-	f, err := os.Open(filepath.Join(st.dir, "records", item.file+".body.json.gz"))
+	f, err := os.Open(filepath.Join(st.dir, "records", file+".body.json.gz"))
 	if err != nil {
 		return &sum, []byte(`{}`), nil
 	}
@@ -227,15 +226,18 @@ func (st *store) load(id string) (*summary, json.RawMessage, error) {
 func (st *store) patchUsage(requestedAt time.Time, model, alias string, info usageInfo, channel string) {
 	st.mu.Lock()
 	var target *storedSummary
+	bestDiff := 5 * time.Second
 	for i := len(st.list) - 1; i >= 0 && i >= len(st.list)-50; i-- {
 		item := st.list[i]
-		if item.Usage != nil || (model != item.Model && model != item.RequestedModel && alias != item.RequestedModel) {
+		if item.Usage != nil || (model != item.Model && model != item.RequestedModel && (alias == "" || alias != item.RequestedModel)) {
 			continue
 		}
 		diff := requestedAt.Sub(item.StartedAt)
-		if diff > -5*time.Second && diff < 5*time.Second {
-			target = item
-			break
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < bestDiff { // 取开始时间最接近的一条，而不是窗口内最新的一条
+			target, bestDiff = item, diff
 		}
 	}
 	if target == nil {
@@ -299,6 +301,10 @@ func (st *store) loadState(schema *schemaStore, findings *map[string]*aggFinding
 					if f.Types == nil {
 						f.Types = make(map[string]int)
 					}
+					if masked := maskExample(f.Example); masked != f.Example { // 旧版本未打码（且已被截断）的示例
+						f.Example = masked
+						loaded.dirty = true
+					}
 					if f.Models == nil {
 						f.Models = make(map[string]int)
 					}
@@ -328,20 +334,32 @@ func (st *store) loadState(schema *schemaStore, findings *map[string]*aggFinding
 	}
 }
 
-func (st *store) saveState(schemaJSON, findingsJSON []byte) {
+// saveState 写入状态文件，返回各自是否写入成功（没有要写的内容视为成功）。
+func (st *store) saveState(schemaJSON, findingsJSON []byte) (schemaOK, findingsOK bool) {
 	if st.memOnly {
-		return
+		return true, true
 	}
+	schemaOK, findingsOK = true, true
+	var errs []string
 	if schemaJSON != nil {
 		if err := writeFileAtomic(filepath.Join(st.dir, "schema.json"), schemaJSON); err != nil {
-			logf("persist schema: %v", err)
+			schemaOK, errs = false, append(errs, "schema: "+err.Error())
 		}
 	}
 	if findingsJSON != nil {
 		if err := writeFileAtomic(filepath.Join(st.dir, "findings.json"), findingsJSON); err != nil {
-			logf("persist findings: %v", err)
+			findingsOK, errs = false, append(errs, "findings: "+err.Error())
 		}
 	}
+	msg := strings.Join(errs, "; ")
+	st.mu.Lock()
+	changed := msg != st.stateErr
+	st.stateErr = msg
+	st.mu.Unlock()
+	if changed && msg != "" {
+		logf("persist state failed, will retry: %s", msg)
+	}
+	return schemaOK, findingsOK
 }
 
 func writeFileAtomic(path string, data []byte) error {
