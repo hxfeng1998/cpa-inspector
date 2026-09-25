@@ -183,7 +183,7 @@ Codex 每个会话都会在 `input` 里带一条 user 消息，开头是 `<envir
 
 配置 `rewrite_env_timezone: America/Los_Angeles` 后，插件在 `request.intercept_before`（翻译和选凭据之前）处理 `openai-response` 请求中的环境日期与时区。首次观察到的当天环境按目标时区改写；历史映射保持不变，需要时在 `input` 末尾追加当前日期更新。
 
-- **准确识别环境消息**：只处理 user 消息中，`internal_chat_message_metadata_passthrough.content_item_kinds` 对应位置为 `environments.environment_context` 的文本。按原 content 索引匹配，图片等非文本项不会造成错位。用户示例、assistant 消息、工具输出保持原样；JSON 中的 `\u003c` 等转义不影响识别。Codex 可能在发送前清除类型标记。无标记时，兼容识别要求 Codex 的 UA/Originator 或专属 client_metadata 特征，以及完整且无尾随正文的环境 XML（日期、合法时区、cwd、shell）；已识别会话也接受仅日期和时区的增量。明确标为用户文本的内容始终不改。无标记时，用户粘贴的、与真实环境完全同形的 XML 仍无法可靠区分，这是启发式识别的边界。
+- **准确识别环境消息**：只处理 user 消息中，`internal_chat_message_metadata_passthrough.content_item_kinds` 对应位置为 `environments.environment_context` 的文本。按原 content 索引匹配，图片等非文本项不会造成错位。用户示例、assistant 消息、工具输出保持原样；JSON 中的 `\u003c` 等转义不影响识别。Codex 可能在发送前清除类型标记。无标记时，兼容识别要求 Codex 的 UA/Originator 或专属 client_metadata 特征，以及完整且无尾随正文的环境 XML（日期、合法时区、cwd、shell）；具有同样客户端特征的请求也接受仅日期和时区的增量，包含重启后的首次增量。明确标为用户文本的内容始终不改。无标记时，用户粘贴的、与真实环境完全同形的 XML 仍无法可靠区分，这是启发式识别的边界。
 - **日期怎么换算**：对有可靠会话标识的环境片段，首次观察时若原日期是源时区的“今天”，则以插件收到请求的时刻计算目标日期，并保存首次映射。这个时刻不是历史消息的生成时间。首次遇到的更早或未来日期、未知源时区不做猜测，保留原文，另外追加目标时区的当前日期；不再按历史日期的正午估算。
 - **跨日与续接**：最新的环境日期不是目标时区的今天时，在 `input` 末尾追加带官方环境类型标记的更新，原有历史片段继续使用首次映射。已识别会话的增量请求、`previous_response_id` 续接、压缩后请求，即使不携带环境片段也会补充当前日期。未识别且没有环境标记的请求保持原样。每个需要更新的请求自行携带更新，不假设上一次请求已经成功；这会增加少量 input tokens，也可能影响追加位置之后的前缀缓存，不保证整个请求的缓存命中率不变。
 - **会话隔离**：支持 `client_metadata.thread_id/session_id`、会话 headers、宿主 `canonical_session_id/execution_session_id`、`prompt_cache_key` 等；线程优先，并在宿主提供 `caller_scope` 时隔离调用方。ID 不截断。没有可靠会话标识时不共享缓存、不修改历史片段，只对当前请求中已标记的环境追加当前日期；没有标识也没有环境片段的后续请求无法可靠关联。

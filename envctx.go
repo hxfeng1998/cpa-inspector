@@ -128,7 +128,7 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header, metadata ...map[
 			if json.Unmarshal(sp.raw, &text) != nil || !strings.HasPrefix(strings.TrimSpace(text), string(envOpenTag)) {
 				continue
 			}
-			if !marked && !legacyEnvContext(text, headers, doc, state.Known) {
+			if !marked && !legacyEnvContext(text, headers, doc) {
 				continue
 			}
 			date, zone, valid := envValues(text)
@@ -351,8 +351,8 @@ func jsonString(s string) []byte {
 }
 
 // 无标记请求只能启发式识别：必须来自 Codex，并且文本完整地由环境 XML 构成。
-// 不接受尾随说明、代码围栏或仅有日期/时区的孤立示例。已识别会话允许官方日期增量。
-func legacyEnvContext(text string, headers http.Header, doc map[string]any, known bool) bool {
+// 不接受尾随说明、代码围栏；允许官方仅日期/时区的增量（包括插件重启后首次看到的增量）。
+func legacyEnvContext(text string, headers http.Header, doc map[string]any) bool {
 	client, _ := doc["client_metadata"].(map[string]any)
 	codex := false
 	for key, values := range headers {
@@ -443,5 +443,5 @@ func legacyEnvContext(text string, headers http.Header, doc map[string]any, know
 	if strings.TrimSpace(fields["cwd"]) != "" && strings.TrimSpace(fields["shell"]) != "" {
 		return true
 	}
-	return known && len(fields) == 2
+	return len(fields) == 2
 }

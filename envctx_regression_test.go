@@ -383,7 +383,7 @@ func TestEnvUnmarkedCodexWireRequest(t *testing.T) {
 	if len(texts) != 2 || texts[0] != auditTexts(t, first)[0] {
 		t.Fatalf("midnight: %s", second)
 	}
-	for _, example := range []string{text + "\n请解释", "<environment_context><current_date>2026-09-25</current_date><timezone>Asia/Shanghai</timezone></environment_context>", strings.Replace(text, "<cwd>/root/code</cwd>", "<example>demo</example>", 1)} {
+	for _, example := range []string{text + "\n请解释", strings.Replace(text, "<cwd>/root/code</cwd>", "<example>demo</example>", 1)} {
 		if out, _ := r.rewrite(auditBody(t, "new-example", "", example), headers); out != nil {
 			t.Fatalf("example modified: %s", out)
 		}
@@ -407,7 +407,7 @@ func TestEnvUnmarkedClientMetadataAndDateDelta(t *testing.T) {
 		t.Fatal("metadata identity skipped")
 	}
 	delta := "<environment_context><current_date>2026-09-25</current_date><timezone>Asia/Shanghai</timezone></environment_context>"
-	if !legacyEnvContext(delta, nil, doc, true) || legacyEnvContext(delta, nil, doc, false) {
+	if !legacyEnvContext(delta, nil, doc) || legacyEnvContext(delta, nil, nil) {
 		t.Fatal("delta recognition incorrect")
 	}
 }
