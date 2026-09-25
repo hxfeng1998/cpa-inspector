@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -54,7 +56,7 @@ func (r *envRewriter) configure(zone string, dirs ...string) {
 	r.sessions = make(map[string]*envSession)
 }
 
-// 只处理有 Codex 环境类型标记的片段。无标记的旧客户端与用户粘贴内容无法可靠区分，保留原文。
+// 有类型标记时严格使用标记；发送前被清除标记的 Codex 请求使用完整环境结构兼容识别。
 // 原始历史映射持久化；跨日时在 input 末尾追加当前环境更新，不回头修改历史日期。
 func (r *envRewriter) rewrite(body []byte, headers http.Header, metadata ...map[string]any) ([]byte, []string) {
 	r.mu.Lock()
@@ -105,7 +107,7 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header, metadata ...map[
 			Type     string `json:"type"`
 			Role     string `json:"role"`
 			Metadata struct {
-				Kinds []string `json:"content_item_kinds"`
+				Kinds json.RawMessage `json:"content_item_kinds"`
 			} `json:"internal_chat_message_metadata_passthrough"`
 		}
 		if json.Unmarshal(item, &head) != nil || head.Role != "user" || (head.Type != "" && head.Type != "message") {
@@ -117,11 +119,16 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header, metadata ...map[
 		}
 		base := inStart + itemStarts[i] + cStart
 		for _, sp := range textSpans(content) {
-			if sp.index >= len(head.Metadata.Kinds) || head.Metadata.Kinds[sp.index] != envContentKind {
+			var kinds []string
+			marked := len(head.Metadata.Kinds) > 0 && string(head.Metadata.Kinds) != "null"
+			if marked && (json.Unmarshal(head.Metadata.Kinds, &kinds) != nil || sp.index >= len(kinds) || kinds[sp.index] != envContentKind) {
 				continue
 			}
 			var text string
 			if json.Unmarshal(sp.raw, &text) != nil || !strings.HasPrefix(strings.TrimSpace(text), string(envOpenTag)) {
+				continue
+			}
+			if !marked && !legacyEnvContext(text, headers, doc, state.Known) {
 				continue
 			}
 			date, zone, valid := envValues(text)
@@ -341,4 +348,100 @@ func jsonString(s string) []byte {
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(s)
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+}
+
+// 无标记请求只能启发式识别：必须来自 Codex，并且文本完整地由环境 XML 构成。
+// 不接受尾随说明、代码围栏或仅有日期/时区的孤立示例。已识别会话允许官方日期增量。
+func legacyEnvContext(text string, headers http.Header, doc map[string]any, known bool) bool {
+	client, _ := doc["client_metadata"].(map[string]any)
+	codex := false
+	for key, values := range headers {
+		if strings.EqualFold(key, "User-Agent") || strings.EqualFold(key, "Originator") {
+			for _, value := range values {
+				if strings.HasPrefix(strings.ToLower(value), "codex") {
+					codex = true
+				}
+			}
+		}
+	}
+	if asString(client["session_id"]) != "" && asString(client["thread_id"]) != "" {
+		for key := range client {
+			if strings.HasPrefix(key, "x-codex-") {
+				codex = true
+			}
+		}
+	}
+	if !codex {
+		return false
+	}
+	decoder := xml.NewDecoder(strings.NewReader(strings.TrimSpace(text)))
+	depth, roots := 0, 0
+	fields := make(map[string]string)
+	current := ""
+	allowed := map[string]bool{"cwd": true, "shell": true, "shell_version": true, "current_date": true, "timezone": true, "filesystem": true, "network": true, "environments": true, "subagents": true}
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false
+		}
+		switch v := token.(type) {
+		case xml.StartElement:
+			if v.Name.Space != "" {
+				return false
+			}
+			if depth == 0 {
+				roots++
+				if roots != 1 || v.Name.Local != "environment_context" || len(v.Attr) != 0 {
+					return false
+				}
+			}
+			if depth == 1 {
+				if !allowed[v.Name.Local] {
+					return false
+				}
+				if _, duplicate := fields[v.Name.Local]; duplicate {
+					return false
+				}
+				current = v.Name.Local
+				fields[current] = ""
+			}
+			if depth >= 2 && (current == "current_date" || current == "timezone" || current == "cwd" || current == "shell") {
+				return false
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+			if depth == 1 {
+				current = ""
+			}
+		case xml.CharData:
+			if depth <= 1 && strings.TrimSpace(string(v)) != "" {
+				return false
+			}
+			if depth == 2 {
+				fields[current] += string(v)
+			}
+		default:
+			return false
+		}
+	}
+	if roots != 1 || depth != 0 {
+		return false
+	}
+	if _, err := time.Parse(dateLayout, fields["current_date"]); err != nil {
+		return false
+	}
+	if fields["timezone"] == "Local" {
+		return false
+	}
+	if _, err := time.LoadLocation(fields["timezone"]); err != nil || fields["timezone"] == "" {
+		return false
+	}
+	if strings.TrimSpace(fields["cwd"]) != "" && strings.TrimSpace(fields["shell"]) != "" {
+		return true
+	}
+	return known && len(fields) == 2
 }

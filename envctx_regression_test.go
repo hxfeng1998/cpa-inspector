@@ -366,3 +366,48 @@ func TestEnvTargetDateAcrossDST(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvUnmarkedCodexWireRequest(t *testing.T) {
+	now := auditTime(t, "2026-09-25T06:30:00Z")
+	r := auditRewriter(t, t.TempDir(), &now)
+	headers := http.Header{"Originator": {"codex-tui"}, "User-Agent": {"codex-tui/0.156.1 (Windows)"}}
+	text := codexEnv("2026-09-25", "Asia/Shanghai")
+	body := auditBody(t, "wire-session", "", text)
+	first, _ := r.rewrite(body, headers)
+	if first == nil || !strings.Contains(auditTexts(t, first)[0], "America/Los_Angeles") {
+		t.Fatalf("wire request skipped: %s", first)
+	}
+	now = now.Add(time.Hour)
+	second, _ := r.rewrite(body, headers)
+	texts := auditTexts(t, second)
+	if len(texts) != 2 || texts[0] != auditTexts(t, first)[0] {
+		t.Fatalf("midnight: %s", second)
+	}
+	for _, example := range []string{text + "\n请解释", "<environment_context><current_date>2026-09-25</current_date><timezone>Asia/Shanghai</timezone></environment_context>", strings.Replace(text, "<cwd>/root/code</cwd>", "<example>demo</example>", 1)} {
+		if out, _ := r.rewrite(auditBody(t, "new-example", "", example), headers); out != nil {
+			t.Fatalf("example modified: %s", out)
+		}
+	}
+	if out, _ := r.rewrite(auditBody(t, "explicit-user", "user.text", text), headers); out != nil {
+		t.Fatal("explicit user text modified")
+	}
+}
+
+func TestEnvUnmarkedClientMetadataAndDateDelta(t *testing.T) {
+	now := auditTime(t, "2026-09-25T06:30:00Z")
+	r := auditRewriter(t, t.TempDir(), &now)
+	body := auditBody(t, "wire", "", codexEnv("2026-09-25", "Asia/Shanghai"))
+	var doc map[string]any
+	json.Unmarshal(body, &doc)
+	client := doc["client_metadata"].(map[string]any)
+	client["thread_id"] = "thread"
+	client["x-codex-window-id"] = "window"
+	body, _ = json.Marshal(doc)
+	if out, _ := r.rewrite(body, nil); out == nil {
+		t.Fatal("metadata identity skipped")
+	}
+	delta := "<environment_context><current_date>2026-09-25</current_date><timezone>Asia/Shanghai</timezone></environment_context>"
+	if !legacyEnvContext(delta, nil, doc, true) || legacyEnvContext(delta, nil, doc, false) {
+		t.Fatal("delta recognition incorrect")
+	}
+}
