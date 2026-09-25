@@ -3,30 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"hash/fnv"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	_ "time/tzdata" // 宿主镜像缺时区数据时仍能解析 rewrite_env_timezone
 )
 
-// Codex 在 input 里放一条以 <environment_context> 开头的 user 消息，带客户端本地的
-// <current_date> 与 <timezone>。配置了 rewrite_env_timezone 后，插件在 request.intercept_before
-// 把这两项改写成目标时区与该时区下的日期，再交给宿主发往上游。
-//
-// 日期按"会话 + 原文"钉住：同一会话里某段 environment_context 第一次出现时换算一次，之后每轮都
-// 复用同一结果。否则目标时区跨过零点时，历史消息的日期会跟着变，破坏前缀缓存。钉住的结果只在内存里，
-// 插件重启后按重启时的时间重新换算。
-
-const (
-	dateLayout    = "2006-01-02"
-	envPinTTL     = 72 * time.Hour
-	envPinMax     = 20000
-	envPruneEvery = 10 * time.Minute
-)
+const dateLayout = "2006-01-02"
+const envContentKind = "environments.environment_context"
 
 var (
 	envOpenTag  = []byte("<environment_context>")
@@ -35,48 +21,49 @@ var (
 	envZoneRe   = regexp.MustCompile(`<timezone>([^<]*)</timezone>`)
 )
 
-type envPin struct {
-	text string
-	note string
-	seen time.Time
-}
-
 type envRewriter struct {
-	mu        sync.Mutex
-	zone      string
-	loc       *time.Location
-	pins      map[string]*envPin
-	lastPrune time.Time
-	now       func() time.Time // 测试替换
+	// 整个请求使用同一配置快照，配置热加载不能在两个文本块之间改变时区。
+	mu       sync.Mutex
+	zone     string
+	loc      *time.Location
+	dir      string
+	sessions map[string]*envSession
+	now      func() time.Time
 }
 
 func newEnvRewriter() *envRewriter {
-	return &envRewriter{pins: make(map[string]*envPin), now: time.Now}
+	return &envRewriter{sessions: make(map[string]*envSession), now: time.Now}
 }
 
-// configure 设置目标时区（parseConfig 已校验）；目标变化时清空钉住的结果。
-func (r *envRewriter) configure(zone string) {
-	var loc *time.Location
-	if zone != "" {
-		loc, _ = time.LoadLocation(zone)
-	}
+// 数据目录与目标时区共同隔离持久化状态；禁用再启用也不丢失历史映射。
+func (r *envRewriter) configure(zone string, dirs ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if zone == r.zone {
+	dir := r.dir
+	if len(dirs) > 0 {
+		dir = dirs[0]
+	}
+	if zone == r.zone && dir == r.dir {
 		return
 	}
-	r.zone, r.loc = zone, loc
-	r.pins = make(map[string]*envPin)
+	r.zone, r.dir = zone, dir
+	r.loc = nil
+	if zone != "" {
+		r.loc, _ = time.LoadLocation(zone)
+	}
+	r.sessions = make(map[string]*envSession)
 }
 
-// rewrite 返回改写后的请求体与改写说明；无需改写时返回 nil。只认 input 数组里 user 消息中
-// 以 <environment_context> 开头的文本块：按它在请求体里的字节区间原位替换，其余字节（包括内容
-// 恰好相同的 assistant 消息、工具输出）保持不变。
-func (r *envRewriter) rewrite(body []byte, headers http.Header) ([]byte, []string) {
+// 只处理有 Codex 环境类型标记的片段。无标记的旧客户端与用户粘贴内容无法可靠区分，保留原文。
+// 原始历史映射持久化；跨日时在 input 末尾追加当前环境更新，不回头修改历史日期。
+func (r *envRewriter) rewrite(body []byte, headers http.Header, metadata ...map[string]any) ([]byte, []string) {
 	r.mu.Lock()
-	enabled := r.loc != nil
-	r.mu.Unlock()
-	if !enabled || !bytes.Contains(body, envOpenTag) {
+	defer r.mu.Unlock()
+	if r.loc == nil {
+		return nil, nil
+	}
+	var doc map[string]any
+	if json.Unmarshal(body, &doc) != nil {
 		return nil, nil
 	}
 	inStart, input, ok := objectMember(body, "input")
@@ -87,22 +74,39 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header) ([]byte, []strin
 	if !ok {
 		return nil, nil
 	}
-	var meta struct {
-		PromptCacheKey string `json:"prompt_cache_key"`
+	var host map[string]any
+	if len(metadata) > 0 {
+		host = metadata[0]
 	}
-	_ = json.Unmarshal(body, &meta)
-	session := sessionKey(headers, map[string]any{"prompt_cache_key": meta.PromptCacheKey}, nil)
+	session := envSessionKey(headers, doc, host)
+	state, err := r.loadSession(session)
+	if err != nil {
+		logf("load environment rewrite state failed; request unchanged: %v", err)
+		return nil, nil
+	}
+	// 克隆后再改，只有持久化成功才发布新状态，避免失败请求污染后续映射。
+	next := &envSession{Version: 1, Known: state.Known, Pins: make(map[string]string, len(state.Pins))}
+	for k, v := range state.Pins {
+		next.Pins[k] = v
+	}
+	dirty := false
 	now := r.now()
+	today := now.In(r.loc).Format(dateLayout)
 	type edit struct {
 		start, end int
 		to         []byte
 	}
 	var edits []edit
 	var notes []string
+	latestDate, latestZone := "", ""
+	found := false
 	for i, item := range items {
 		var head struct {
-			Type string `json:"type"`
-			Role string `json:"role"`
+			Type     string `json:"type"`
+			Role     string `json:"role"`
+			Metadata struct {
+				Kinds []string `json:"content_item_kinds"`
+			} `json:"internal_chat_message_metadata_passthrough"`
 		}
 		if json.Unmarshal(item, &head) != nil || head.Role != "user" || (head.Type != "" && head.Type != "message") {
 			continue
@@ -113,11 +117,40 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header) ([]byte, []strin
 		}
 		base := inStart + itemStarts[i] + cStart
 		for _, sp := range textSpans(content) {
+			if sp.index >= len(head.Metadata.Kinds) || head.Metadata.Kinds[sp.index] != envContentKind {
+				continue
+			}
 			var text string
 			if json.Unmarshal(sp.raw, &text) != nil || !strings.HasPrefix(strings.TrimSpace(text), string(envOpenTag)) {
 				continue
 			}
-			repl, note := r.pinned(session, text, now)
+			date, zone, valid := envValues(text)
+			if !valid || zone == "" {
+				continue
+			}
+			found = true
+			repl, note := text, ""
+			// 没有稳定会话 ID 时不钉住也不改历史，只追加无状态的当前环境更新。
+			if session != "" {
+				key := envHash(text)
+				mapped, exists := next.Pins[key]
+				if !exists {
+					mapped = ""
+					if zone != r.zone {
+						if date == "" {
+							mapped = "-"
+						} else {
+							mapped = envTargetDate(date, zone, r.loc, now)
+						}
+					}
+					next.Pins[key] = mapped
+					dirty = true
+				}
+				if mapped != "" {
+					repl, note = replaceEnvValues(text, r.zone, mapped)
+				}
+			}
+			latestDate, latestZone, _ = envValues(repl)
 			start, end := base+sp.off, base+sp.off+len(sp.raw)
 			if repl == text || end > len(body) || !bytes.Equal(body[start:end], sp.raw) {
 				continue
@@ -126,51 +159,57 @@ func (r *envRewriter) rewrite(body []byte, headers http.Header) ([]byte, []strin
 			notes = append(notes, note)
 		}
 	}
+	if found && !next.Known {
+		next.Known = true
+		dirty = true
+	}
+	// continuation / 压缩后可能只带工具结果：已识别的会话仍补充当前日期。
+	// 不以“上次发过”省略更新，因为上次请求可能失败，且服务端历史不一定包含该更新。
+	if next.Known && (latestDate != today || latestZone != r.zone) {
+		update := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":`)
+		update = append(update, jsonString("<environment_context>\n  <current_date>"+today+"</current_date>\n  <timezone>"+r.zone+"</timezone>\n</environment_context>")...)
+		update = append(update, []byte(`}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}`)...)
+		if len(items) > 0 {
+			update = append([]byte{','}, update...)
+		}
+		at := inStart + len(input) - 1
+		edits = append(edits, edit{at, at, update})
+		notes = append(notes, "追加当前环境：current_date "+today+"，timezone "+r.zone)
+	}
+	if dirty && session != "" {
+		if err := r.saveSession(session, next); err != nil {
+			logf("persist environment rewrite state failed; request unchanged: %v", err)
+			return nil, nil
+		}
+	}
 	if len(edits) == 0 {
 		return nil, nil
 	}
-	out := make([]byte, 0, len(body)+64*len(edits))
+	out := make([]byte, 0, len(body)+512)
 	prev := 0
-	for _, e := range edits { // 区间按出现顺序排列、互不重叠
+	for _, e := range edits {
 		out = append(append(out, body[prev:e.start]...), e.to...)
 		prev = e.end
 	}
 	return append(out, body[prev:]...), notes
 }
 
-func (r *envRewriter) pinned(session, text string, now time.Time) (string, string) {
-	h := fnv.New64a()
-	h.Write([]byte(text))
-	key := session + "\x00" + strconv.FormatUint(h.Sum64(), 16)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if p := r.pins[key]; p != nil {
-		p.seen = now
-		return p.text, p.note
+func envValues(text string) (date, zone string, valid bool) {
+	end := strings.Index(text, envCloseTag)
+	if end < 0 {
+		return "", "", false
 	}
-	repl, note := rewriteEnvText(text, r.zone, r.loc, now)
-	if now.Sub(r.lastPrune) > envPruneEvery || len(r.pins) >= envPinMax {
-		r.pruneLocked(now)
+	block := text[:end]
+	if m := envDateRe.FindStringSubmatch(block); m != nil {
+		date = m[1]
 	}
-	r.pins[key] = &envPin{text: repl, note: note, seen: now}
-	return repl, note
+	if m := envZoneRe.FindStringSubmatch(block); m != nil {
+		zone = m[1]
+	}
+	return date, zone, true
 }
 
-func (r *envRewriter) pruneLocked(now time.Time) {
-	r.lastPrune = now
-	for k, p := range r.pins {
-		if now.Sub(p.seen) > envPinTTL {
-			delete(r.pins, k)
-		}
-	}
-	if len(r.pins) >= envPinMax { // 极端情况：短时间内会话过多，整体丢弃，代价只是这些会话下一轮重新换算
-		r.pins = make(map[string]*envPin)
-	}
-}
-
-// rewriteEnvText 改写一段 environment_context。没有 <timezone> 或已是目标时区时原样返回。
-func rewriteEnvText(text, zone string, loc *time.Location, now time.Time) (string, string) {
-	// 只看 environment_context 内部：同一文本块后面若还有正文，正文里的同名标签不能动
+func replaceEnvValues(text, zone, date string) (string, string) {
 	end := strings.Index(text, envCloseTag)
 	if end < 0 {
 		return text, ""
@@ -180,39 +219,31 @@ func rewriteEnvText(text, zone string, loc *time.Location, now time.Time) (strin
 	if zm == nil {
 		return text, ""
 	}
-	srcZone := block[zm[2]:zm[3]]
-	if srcZone == zone {
-		return text, ""
-	}
+	note := "timezone " + block[zm[2]:zm[3]] + " → " + zone
 	out := block[:zm[2]] + zone + block[zm[3]:]
-	note := "timezone " + srcZone + " → " + zone
-	if dm := envDateRe.FindStringSubmatchIndex(out); dm != nil {
-		srcDate := out[dm[2]:dm[3]]
-		dstDate := envTargetDate(srcDate, srcZone, loc, now)
-		out = out[:dm[2]] + dstDate + out[dm[3]:]
-		note += "，current_date " + srcDate + " → " + dstDate
+	if date != "-" {
+		if dm := envDateRe.FindStringSubmatchIndex(out); dm != nil {
+			note += "，current_date " + out[dm[2]:dm[3]] + " → " + date
+			out = out[:dm[2]] + date + out[dm[3]:]
+		}
 	}
 	return out + tail, note
 }
 
-// envTargetDate 估计原日期在目标时区对应哪一天。原日期就是客户端时区的"今天"时，取目标时区的当前日期；
-// 更早（或更晚）的日期无法知道具体时刻，按当天正午换算。
+// 只有首次观察到的源时区“今天”可按当前时刻映射；历史日期没有时分秒，不能按正午猜测。
+// 返回空值表示保留历史原文，由请求末尾的当前环境更新提供目标时区与今天。
 func envTargetDate(srcDate, srcZone string, loc *time.Location, now time.Time) string {
-	today := now.In(loc).Format(dateLayout)
 	srcLoc, err := time.LoadLocation(srcZone)
-	if err != nil || now.In(srcLoc).Format(dateLayout) == srcDate {
-		return today
+	if err != nil || srcZone == "Local" || loc == nil || now.In(srcLoc).Format(dateLayout) != srcDate {
+		return ""
 	}
-	day, err := time.ParseInLocation(dateLayout, srcDate, srcLoc)
-	if err != nil {
-		return today
-	}
-	return day.Add(12 * time.Hour).In(loc).Format(dateLayout)
+	return now.In(loc).Format(dateLayout)
 }
 
 type textSpan struct {
-	off int    // 在 content 里的偏移
-	raw []byte // JSON 字符串原文（含引号）
+	index int    // 原 content 数组索引，不能使用过滤后的文本索引
+	off   int    // 在 content 里的偏移
+	raw   []byte // JSON 字符串原文（含引号）
 }
 
 // textSpans 找出消息 content 里的文本：字符串，或 [{type:"input_text"|"text", text}] 列表中的 text。
@@ -221,7 +252,7 @@ func textSpans(content []byte) []textSpan {
 		return nil
 	}
 	if content[0] == '"' {
-		return []textSpan{{0, content}}
+		return []textSpan{{index: 0, off: 0, raw: content}}
 	}
 	starts, parts, ok := arrayElems(content)
 	if !ok {
@@ -236,7 +267,7 @@ func textSpans(content []byte) []textSpan {
 			continue
 		}
 		if off, raw, ok := objectMember(part, "text"); ok && len(raw) > 0 && raw[0] == '"' {
-			out = append(out, textSpan{starts[i] + off, raw})
+			out = append(out, textSpan{index: i, off: starts[i] + off, raw: raw})
 		}
 	}
 	return out

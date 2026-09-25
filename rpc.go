@@ -272,8 +272,8 @@ func dispatch(method string, request []byte) (out []byte) {
 	case methodRequestInterceptBefore, methodRequestInterceptAfter:
 		var req requestInterceptRequest
 		if err := json.Unmarshal(request, &req); err == nil {
-			if method == methodRequestInterceptBefore {
-				if body, notes := ins.env.rewrite(req.Body, req.Headers); body != nil {
+			if method == methodRequestInterceptBefore && req.SourceFormat == "openai-response" {
+				if body, notes := ins.env.rewrite(req.Body, req.Headers, req.Metadata); body != nil {
 					ins.onRewrittenRequest(&req, body, notes)
 					return okEnvelope(requestInterceptResult{Body: body})
 				}
@@ -332,7 +332,7 @@ func buildRegistration(cfg config) registration {
 				{Name: "max_body_mb", Type: "integer", Description: "单个请求/响应体保留上限（MB），超出部分只分析不保存。"},
 				{Name: "learn_samples", Type: "integer", Description: "字段基线学习样本数：某作用域观测满该数量后，新出现的字段才会被报告为漂移。"},
 				{Name: "scan_secrets", Type: "boolean", Description: "扫描发往上游的请求体中是否含密钥/私钥/带口令的连接串。"},
-				{Name: "rewrite_env_timezone", Type: "string", Description: "把 Codex 请求里 <environment_context> 的时区与日期改写为该 IANA 时区（如 America/Los_Angeles）；留空不改写。"},
+				{Name: "rewrite_env_timezone", Type: "string", Description: "将带 Codex 环境类型标记的请求日期与时区统一为该 IANA 时区（如 America/Los_Angeles），保留历史映射并按需追加当前日期；留空不改写。"},
 			},
 		},
 		Capabilities: capabilities{

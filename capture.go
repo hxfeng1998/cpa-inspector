@@ -200,7 +200,7 @@ func configureInspector(cfg config) {
 		dirChanged := global.cfg.DataDir != cfg.DataDir
 		global.cfg = cfg
 		global.mu.Unlock()
-		global.env.configure(cfg.RewriteEnvTimezone)
+		global.env.configure(cfg.RewriteEnvTimezone, cfg.DataDir)
 		if !dirChanged {
 			global.store.setLimits(cfg.MaxRecords, int64(cfg.MaxDiskMB)<<20)
 			return
@@ -209,9 +209,9 @@ func configureInspector(cfg config) {
 	}
 	env := newEnvRewriter()
 	if global != nil {
-		env = global.env // 换数据目录不影响已钉住的改写结果
+		env = global.env // configure 按目标时区和数据目录隔离状态
 	}
-	env.configure(cfg.RewriteEnvTimezone)
+	env.configure(cfg.RewriteEnvTimezone, cfg.DataDir)
 	ins := &inspector{
 		cfg:      cfg,
 		active:   make(map[string]*record),

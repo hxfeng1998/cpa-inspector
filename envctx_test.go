@@ -31,6 +31,26 @@ func codexBody(t *testing.T, session string, envs ...string) []byte {
 	for _, env := range envs[1:] {
 		input = append(input, map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": env}}})
 	}
+	// 使用官方的逐 content 标记；普通用户文本没有环境标记。
+	for _, raw := range input {
+		item := raw.(map[string]any)
+		if item["role"] != "user" {
+			continue
+		}
+		parts, ok := item["content"].([]any)
+		if !ok {
+			continue
+		}
+		kinds := make([]string, len(parts))
+		for i, rawPart := range parts {
+			part := rawPart.(map[string]any)
+			kinds[i] = "user.text"
+			if strings.HasPrefix(part["text"].(string), "<environment_context>") {
+				kinds[i] = envContentKind
+			}
+		}
+		item["internal_chat_message_metadata_passthrough"] = map[string]any{"content_item_kinds": kinds}
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // 与 Codex（serde_json）一致：不转义 <>
@@ -135,8 +155,8 @@ func TestEnvTargetDate(t *testing.T) {
 	now, _ := time.Parse(time.RFC3339, "2026-09-25T20:00:00+08:00") // 洛杉矶 9 月 25 日 05:00
 	for _, c := range []struct{ src, zone, want string }{
 		{"2026-09-25", "Asia/Shanghai", "2026-09-25"}, // 客户端的"今天"：取洛杉矶当前日期
-		{"2026-09-23", "Asia/Shanghai", "2026-09-22"}, // 更早的日期：按上海正午换算
-		{"2026-09-25", "Mars/Olympus", "2026-09-25"},  // 未知时区：只能取当前日期
+		{"2026-09-23", "Asia/Shanghai", ""},           // 历史日期无法精确还原，保留原文
+		{"2026-09-25", "Mars/Olympus", ""},            // 未知时区也不能猜测
 	} {
 		if got := envTargetDate(c.src, c.zone, la, now); got != c.want {
 			t.Fatalf("envTargetDate(%s, %s) = %s, want %s", c.src, c.zone, got, c.want)
@@ -150,17 +170,18 @@ func TestEnvContextLeftAloneWhenNotApplicable(t *testing.T) {
 		t.Fatalf("rewrite must be off by default: %s", out)
 	}
 	setup(t, "rewrite_env_timezone: America/Los_Angeles")
+	setClock(t, "2026-09-25T12:00:00Z")
 	if out := interceptBefore(t, "n2", codexBody(t, "s1", codexEnv("2026-09-25", "America/Los_Angeles"))); out != nil {
 		t.Fatalf("already in the target zone: %s", out)
 	}
 	noZone := "<environment_context>\n  <cwd>/root</cwd>\n  <current_date>2026-09-25</current_date>\n</environment_context>"
-	if out := interceptBefore(t, "n3", codexBody(t, "s1", noZone)); out != nil {
+	if out := interceptBefore(t, "n3", codexBody(t, "no-zone-session", noZone)); out != nil {
 		t.Fatalf("no <timezone>: %s", out)
 	}
-	// 客户端把 < 转义成 unicode 转义序列：预筛找不到标签，不改写
+	// JSON 转义不改变语义，应正常识别。
 	escaped := bytes.ReplaceAll(codexBody(t, "s1", codexEnv("2026-09-25", "Asia/Shanghai")), []byte("<"), []byte{'\\', 'u', '0', '0', '3', 'c'})
-	if out := interceptBefore(t, "n4", escaped); out != nil {
-		t.Fatalf("escaped body must be left alone: %s", out)
+	if out := interceptBefore(t, "n4", escaped); out == nil || !json.Valid(out) {
+		t.Fatalf("escaped body must be rewritten: %s", out)
 	}
 }
 
@@ -200,19 +221,21 @@ func TestEnvContextRewriteOnIndentedBody(t *testing.T) {
 
 // 只改 environment_context 内部：同一文本块后面的正文里的同名标签不动。
 func TestEnvContextTagsOutsideBlockAreIgnored(t *testing.T) {
-	la, _ := time.LoadLocation("America/Los_Angeles")
-	now, _ := time.Parse(time.RFC3339, "2026-09-25T01:27:35+08:00")
+	now := auditTime(t, "2026-09-25T01:27:35+08:00")
+	r := auditRewriter(t, t.TempDir(), &now)
 	noZone := "<environment_context><cwd>/root/code</cwd></environment_context>\nExplain <timezone>Asia/Shanghai</timezone>."
-	if got, _ := rewriteEnvText(noZone, "America/Los_Angeles", la, now); got != noZone {
-		t.Fatalf("tags after the block must be ignored: %q", got)
+	if out, _ := r.rewrite(auditBody(t, "no-zone", envContentKind, noZone), nil); out != nil {
+		t.Fatalf("tags after the block must be ignored: %s", out)
 	}
 	noDate := "<environment_context><timezone>Asia/Shanghai</timezone></environment_context>\n<current_date>2026-09-25</current_date>"
 	want := "<environment_context><timezone>America/Los_Angeles</timezone></environment_context>\n<current_date>2026-09-25</current_date>"
-	if got, _ := rewriteEnvText(noDate, "America/Los_Angeles", la, now); got != want {
-		t.Fatalf("date after the block must be ignored: %q", got)
+	out, _ := r.rewrite(auditBody(t, "no-date", envContentKind, noDate), nil)
+	texts := auditTexts(t, out)
+	if len(texts) != 2 || texts[0] != want {
+		t.Fatalf("date after the block must be ignored: %s", out)
 	}
 	unclosed := "<environment_context><timezone>Asia/Shanghai</timezone>"
-	if got, _ := rewriteEnvText(unclosed, "America/Los_Angeles", la, now); got != unclosed {
-		t.Fatalf("unclosed block must be left alone: %q", got)
+	if out, _ := r.rewrite(auditBody(t, "unclosed", envContentKind, unclosed), nil); out != nil {
+		t.Fatalf("unclosed block must be left alone: %s", out)
 	}
 }
