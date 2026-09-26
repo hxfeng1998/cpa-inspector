@@ -35,6 +35,7 @@ func managementRoutes() managementRegistration {
 			route(http.MethodPost, "/ack-field", "Accept a field into the baseline"),
 			route(http.MethodPost, "/rebaseline", "Accept everything observed so far as baseline"),
 			route(http.MethodPost, "/clear", "Clear stored data"),
+			route(http.MethodPost, "/timezones", "Filter time zones usable by rewrite_env_timezone"),
 		},
 		Resources: []managementRoute{{Path: "/ui", Menu: "CPA Inspector", Description: "请求/响应抓取、字段漂移与渠道安全分析"}},
 	}
@@ -84,6 +85,12 @@ func handleManagement(req managementRequest) managementResponse {
 	case "/rebaseline":
 		ins.rebaseline()
 		return jsonResponse(http.StatusOK, map[string]bool{"ok": true})
+	case "/timezones":
+		var body struct {
+			Zones []string `json:"zones"`
+		}
+		_ = json.Unmarshal(req.Body, &body)
+		return jsonResponse(http.StatusOK, map[string]any{"zones": rewriteZoneOptions(body.Zones, time.Now())})
 	case "/clear":
 		var body struct {
 			Target string `json:"target"`
@@ -93,6 +100,32 @@ func handleManagement(req managementRequest) managementResponse {
 		return jsonResponse(http.StatusOK, map[string]bool{"ok": true})
 	}
 	return jsonResponse(http.StatusNotFound, map[string]string{"error": "unknown route"})
+}
+
+type zoneOption struct {
+	Name   string `json:"name"`
+	Offset int    `json:"offset"` // 当前 UTC 偏移（秒）
+}
+
+// rewriteZoneOptions 从界面给出的候选（浏览器的 IANA 列表）里筛出插件能解析的时区。
+// 设置页只允许选这些：写进 config.yaml 的时区若无法解析，插件重载会失败。
+func rewriteZoneOptions(names []string, now time.Time) []zoneOption {
+	if len(names) > 2000 {
+		names = names[:2000]
+	}
+	out := make([]zoneOption, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if len(name) > 64 || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if loc := loadRewriteZone(name); loc != nil {
+			_, offset := now.In(loc).Zone()
+			out = append(out, zoneOption{Name: name, Offset: offset})
+		}
+	}
+	return out
 }
 
 func jsonResponse(status int, v any) managementResponse {

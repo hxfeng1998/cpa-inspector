@@ -269,3 +269,22 @@ func TestEnvContextTagsOutsideBlockAreIgnored(t *testing.T) {
 		t.Fatalf("unclosed block must be left alone: %s", out)
 	}
 }
+
+// 设置页的时区下拉只列插件能解析的时区：写进 config.yaml 的时区解析失败会导致插件重载失败。
+func TestRewriteZoneOptions(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) // 洛杉矶处于夏令时
+	got := rewriteZoneOptions([]string{"America/Los_Angeles", "Local", "California", "", "Asia/Shanghai", "Asia/Shanghai", "UTC"}, now)
+	want := []zoneOption{{"America/Los_Angeles", -7 * 3600}, {"Asia/Shanghai", 8 * 3600}, {"UTC", 0}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("zones = %v, want %v", got, want)
+	}
+
+	setup(t, "")
+	resp := handleManagement(managementRequest{Method: "POST", Path: apiBase + "/timezones", Body: []byte(`{"zones":["Asia/Tokyo","Mars/Olympus"]}`)})
+	var body struct {
+		Zones []zoneOption `json:"zones"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil || resp.StatusCode != 200 || len(body.Zones) != 1 || body.Zones[0] != (zoneOption{"Asia/Tokyo", 9 * 3600}) {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+}

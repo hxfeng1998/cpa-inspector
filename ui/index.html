@@ -80,6 +80,7 @@ main { padding: 28px 32px 64px; min-width: 0; }
 .btn.ghost:hover { background: var(--sunken); }
 .btn.danger { color: var(--critical); }
 .btn.sm { padding: 2px 9px; font-size: 12.5px; }
+.btn:disabled { cursor: not-allowed; opacity: .55; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
 .filters input, .filters select, .field { border: 1px solid var(--hair); background: var(--raised); border-radius: 8px; padding: 6px 10px; min-width: 0; }
 .filters input[type=search] { flex: 1 1 240px; }
@@ -843,48 +844,114 @@ async function viewSchema(sink) {
 }
 
 /* ---------- 设置 ---------- */
-function viewSettings() {
+async function viewSettings(sink) {
   const o = state.overview, c = o.config, st = o.stats;
   const act = (label, body, path, cls) => h("button", { class: "btn " + (cls || ""), onclick: async () => { if (!confirm(label + "？此操作不可撤销。")) return; await api(path, body); toast("已完成"); refresh(false); } }, label);
+  const envCard = await envRewriteCard(c, sink);
   return h("div", {}, head("设置", "配置项在 CLIProxyAPI 的 config.yaml → plugins.configs.cpa-inspector 下修改，保存后热生效。"),
     h("div", { class: "grid two" },
       h("section", { class: "card" }, h("header", {}, h("h3", {}, "当前配置")), h("div", { class: "body" }, h("div", { class: "kv" }, Object.entries(c).map(([k, v]) => kv(k, String(v), true))))),
       h("section", { class: "card" }, h("header", {}, h("h3", {}, "运行状态")), h("div", { class: "body" }, h("div", { class: "kv" }, kv("启动时间", clock(o.started_at)), kv("已处理请求", nf.format(st.requests)), kv("上游分片", nf.format(st.upstream_chunks)), kv("下游分片", nf.format(st.downstream_chunks)), kv("未能关联的上游分片", nf.format(st.orphan_chunks)), kv("存储占用", bytes(o.storage.bytes) + (o.storage.memory_only ? "（数据目录不可写，仅内存）" : "")))))),
-    envRewriteCard(c),
+    envCard,
     h("section", { class: "card", style: "margin-top:16px" }, h("header", {}, h("h3", {}, "基线与数据")), h("div", { class: "body", style: "display:grid;gap:12px" },
       h("p", { class: "sub", style: "margin:0" }, "「重建基线」表示你已审阅当前所有字段并认定为正常：全部字段并入基线，现有漂移发现标记为已确认，此后只报告新的变化。"),
       h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, act("以当前状态重建基线", {}, "/rebaseline", "primary"), act("清空请求记录", { target: "records" }, "/clear", "danger"), act("清空发现项", { target: "findings" }, "/clear", "danger"), act("清空字段图谱", { target: "schema" }, "/clear", "danger"),
         h("button", { class: "btn", onclick: () => { try { localStorage.removeItem(KEY_STORE); } catch (e) {} state.key = ""; renderGate(""); } }, "退出并清除本机保存的密钥")))));
 }
 
-// Codex 时区与日期改写开关：经宿主接口写回 config.yaml，宿主热重载后插件按新配置生效。
-function envRewriteCard(c) {
+// 时区候选来自浏览器的 IANA 列表，再由插件筛掉它解析不了的：写进 config.yaml 的时区无法解析时插件重载会失败。
+// 列表只在进入设置页时取一次（偏移随夏令时变化，页面长时间打开时每小时重取）。
+async function rewriteZones(current) {
+  const cache = state.zoneCache;
+  if (cache && Date.now() - cache.at < 3600e3 && (!current || cache.list.some((z) => z.name === current))) return cache.list;
+  let names = [];
+  try { names = Intl.supportedValuesOf("timeZone"); } catch (e) {}
+  if (!names.length) names = ["UTC", "Asia/Shanghai", "Asia/Tokyo", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"];
+  names = [...new Set(["UTC", ...names, current].filter(Boolean))];
+  const list = (await api("/timezones", { zones: names })).zones || [];
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  state.zoneCache = { at: Date.now(), list };
+  return list;
+}
+function utcOffset(sec) { const a = Math.abs(sec); return "UTC" + (sec < 0 ? "−" : "+") + String(Math.floor(a / 3600)).padStart(2, "0") + ":" + String(Math.floor(a % 3600 / 60)).padStart(2, "0"); }
+// zoneNow 按目标时区格式化当前时刻；浏览器不认识该时区名时退回插件给出的固定偏移。
+function zoneNow(opt) {
+  const d = new Date();
+  try {
+    const f = (o) => new Intl.DateTimeFormat("en-CA", Object.assign({ timeZone: opt.name }, o)).format(d);
+    return { date: f({ year: "numeric", month: "2-digit", day: "2-digit" }), time: f({ hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }) };
+  } catch (e) {
+    const iso = new Date(d.getTime() + opt.offset * 1000).toISOString();
+    return { date: iso.slice(0, 10), time: iso.slice(11, 19) };
+  }
+}
+
+// Codex 时区与日期改写：开关与目标时区都经宿主接口写回 config.yaml，宿主热重载后插件按新配置生效。
+async function envRewriteCard(c, sink) {
   const zone = c.rewrite_env_timezone || "", on = c.rewrite_env_enabled !== false;
-  const status = !zone ? "未配置 rewrite_env_timezone，不改写" : on ? "生效中：改写为 " + zone : "已关闭：请求原样转发";
-  const set = async (want) => {
-    if (want === on) return;
-    seg.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  let zones = [], zoneErr = "";
+  try { zones = await rewriteZones(zone); } catch (e) { if (e.auth) throw e; zoneErr = "无法获取时区列表：" + e.message; }
+  // 时区列表的版本或错误进入刷新签名：取列表失败后恢复、每小时重取偏移，都要触发重绘
+  if (sink) sink.push("/timezones\n" + (zoneErr || state.zoneCache.at));
+  if (state.pendingZone === zone) state.pendingZone = "";
+  const picked = state.pendingZone || zone; // 未应用的选择跨自动刷新保留
+  const status = !zone ? "未设置目标时区，不改写" : on ? "生效中：改写为 " + zone : "已关闭：请求原样转发";
+  const controls = [];
+  let busy = false;
+  // save 写回配置并等插件回报的配置变过来，最多约 5 秒
+  const save = async (patch, done, key, label) => {
+    busy = true;
+    controls.forEach((el) => { el.disabled = true; });
     try {
-      await mgmt(PLUGIN_CONFIG_API, "PATCH", { rewrite_env_enabled: want });
-      // 宿主异步重载配置：等插件回报的配置变过来再刷新，最多约 5 秒
+      await mgmt(PLUGIN_CONFIG_API, "PATCH", patch);
       let applied = false;
       for (let i = 0; i < 10 && !applied; i++) {
         await new Promise((r) => setTimeout(r, 500));
-        applied = (await api("/overview")).config.rewrite_env_enabled === want;
+        applied = (await api("/overview")).config[key] === patch[key];
       }
-      toast(applied ? (want ? "已开启时区与日期改写" : "已关闭时区与日期改写") : "已保存到 config.yaml，等待宿主重载配置");
+      if (applied) done();
+      toast(applied ? label : "已保存到 config.yaml，等待宿主重载配置");
     } catch (e) {
       if (e.auth) return renderGate(e.message);
-      toast(e.status === 404 || e.status === 405 ? "当前 CLIProxyAPI 不支持在线修改插件配置，请在 config.yaml 中设置 rewrite_env_enabled" : "保存失败：" + e.message);
+      toast(e.status === 404 || e.status === 405 ? "当前 CLIProxyAPI 不支持在线修改插件配置，请在 config.yaml 中设置 " + Object.keys(patch).join("、") : "保存失败：" + e.message);
     }
     refresh(false);
   };
+  const setOn = (want) => { if (want !== on) save({ rewrite_env_enabled: want }, () => {}, "rewrite_env_enabled", want ? "已开启时区与日期改写" : "已关闭时区与日期改写"); };
   const seg = h("div", { class: "seg", role: "group", "aria-label": "时区与日期改写" },
-    h("button", { "aria-pressed": String(on), onclick: () => set(true) }, "开启"),
-    h("button", { "aria-pressed": String(!on), onclick: () => set(false) }, "关闭"));
+    h("button", { "aria-pressed": String(on), onclick: () => setOn(true) }, "开启"),
+    h("button", { "aria-pressed": String(!on), onclick: () => setOn(false) }, "关闭"));
+  controls.push(...seg.children);
+
+  const byRegion = new Map();
+  for (const z of zones) { const r = z.name.includes("/") ? z.name.split("/")[0] : "其他"; if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(z); }
+  const select = h("select", { class: "field", "aria-label": "目标时区", disabled: !on || !zones.length, style: "min-width:260px",
+    onchange: (e) => { state.pendingZone = e.target.value === zone ? "" : e.target.value; paintPreview(); } },
+    zone ? null : h("option", { value: "", selected: !picked }, "请选择时区"),
+    [...byRegion].map(([r, list]) => h("optgroup", { label: r }, list.map((z) => h("option", { value: z.name, selected: z.name === picked }, z.name + " · " + utcOffset(z.offset))))));
+  const apply = h("button", { class: "btn primary", disabled: !on || !state.pendingZone, onclick: () => {
+    const want = state.pendingZone;
+    if (want) save({ rewrite_env_timezone: want }, () => { state.pendingZone = ""; }, "rewrite_env_timezone", "目标时区已改为 " + want);
+  } }, "应用");
+  controls.push(select, apply);
+
+  // 预览：所选时区的当前时间与改写后的 current_date，每秒更新，切换下拉即跟着变
+  const preview = h("span", { class: "muted mono" });
+  function paintPreview() {
+    const opt = zones.find((z) => z.name === (state.pendingZone || zone));
+    apply.disabled = busy || !on || !state.pendingZone;
+    if (!opt) { preview.textContent = ""; return; }
+    const now = zoneNow(opt);
+    preview.textContent = opt.name + " 当前时间 " + now.date + " " + now.time + "（" + utcOffset(opt.offset) + "）· 改写后的 current_date：" + now.date + (state.pendingZone ? " · 未应用" : "");
+  }
+  paintPreview();
+  const timer = setInterval(() => { if (!preview.isConnected) clearInterval(timer); else paintPreview(); }, 1000);
+
   return h("section", { class: "card", style: "margin-top:16px" }, h("header", {}, h("h3", {}, "Codex 时区与日期改写")), h("div", { class: "body", style: "display:grid;gap:12px" },
-    h("p", { class: "sub", style: "margin:0" }, "开启后把 Codex 请求 <environment_context> 里的时区与日期改写为 rewrite_env_timezone 指定的时区；关闭后请求原样转发，重新开启时沿用已有的历史映射。切换会写回 config.yaml（rewrite_env_enabled）。"),
-    h("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, seg, h("span", { class: "muted" }, status))));
+    h("p", { class: "sub", style: "margin:0" }, "开启后把 Codex 请求 <environment_context> 里的时区与日期改写为目标时区，日期按该时区的当前时间换算；关闭后请求原样转发，重新开启时沿用已有的历史映射。历史映射按目标时区分别保存：换成新时区后，已有会话的环境会按新时区重新换算一次，该会话的前缀缓存会失效一次。设置写回 config.yaml（rewrite_env_enabled、rewrite_env_timezone）。"),
+    h("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, seg, h("span", { class: "muted" }, status)),
+    h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" }, h("span", {}, "目标时区"), select, apply),
+    zoneErr ? h("div", { class: "err" }, zoneErr) : preview));
 }
 
 /* ---------- 启动 ---------- */

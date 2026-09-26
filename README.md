@@ -166,7 +166,7 @@ http(s)://<host>:<port>/v0/resource/plugins/cpa-inspector/ui
 | `learn_samples` | `30` | 基线学习样本数：每个作用域的前 N 个请求只学习、不报告 |
 | `scan_secrets` | `true` | 扫描请求体里的密钥、私钥、带口令的连接串 |
 | `rewrite_env_enabled` | `true` | 时区与日期改写的开关，仅在配置了 `rewrite_env_timezone` 时起作用。设为 `false` 暂停改写、请求原样转发，无需清空时区；也可在界面「设置」页或 CPA 管理面板的插件配置里切换 |
-| `rewrite_env_timezone` | 空（不改写） | IANA 时区名，如 `America/Los_Angeles`。把 Codex 请求里 `<environment_context>` 的时区与日期改写成该时区，见[下文](#改写-codex-的时区与日期)。填错时区名会导致插件加载失败 |
+| `rewrite_env_timezone` | 空（不改写） | IANA 时区名，如 `America/Los_Angeles`。把 Codex 请求里 `<environment_context>` 的时区与日期改写成该时区，见[下文](#改写-codex-的时区与日期)。也可在界面「设置」页的下拉列表里选。手写配置时填错时区名会导致插件加载失败 |
 
 ## 改写 Codex 的时区与日期
 
@@ -184,7 +184,11 @@ Codex 每个会话都会在 `input` 里带一条 user 消息，开头是 `<envir
 
 配置 `rewrite_env_timezone: America/Los_Angeles` 后，插件在 `request.intercept_before`（翻译和选凭据之前）处理 `openai-response` 请求中的环境日期与时区。首次观察到的当天环境按目标时区改写；历史映射保持不变，需要时在 `input` 末尾追加当前日期更新。
 
-`rewrite_env_enabled`（默认 `true`）控制是否实际改写：设为 `false` 后请求原样转发，时区配置和已保存的历史映射都保留，重新开启即恢复。界面「设置」页的「Codex 时区与日期改写」开关会通过宿主的 `PATCH /v0/management/plugins/cpa-inspector/config` 写回 `config.yaml`，宿主热重载后生效；宿主版本不支持该接口时，请直接修改 `config.yaml`。
+`rewrite_env_enabled`（默认 `true`）控制是否实际改写：设为 `false` 后请求原样转发，时区配置和已保存的历史映射都保留，重新开启即恢复。
+
+界面「设置」页的「Codex 时区与日期改写」卡片可以切换开关，也可以在开启时从下拉列表选目标时区。卡片会实时显示所选时区的当前时间和改写后的 `current_date`，点「应用」后才会保存。下拉列表来自浏览器的 IANA 时区列表，并由插件筛掉自己解析不了的时区，因为写进配置的时区无法解析会导致插件重载失败。设置通过宿主的 `PATCH /v0/management/plugins/cpa-inspector/config` 写回 `config.yaml`，宿主热重载后生效；宿主版本不支持该接口时，请直接修改 `config.yaml`。
+
+历史映射按目标时区分别保存。换成新时区后，已有会话的历史环境会按新时区重新换算，这些会话的前缀缓存会失效一次；换回原时区时沿用原来的映射。
 
 - **准确识别环境消息**：只处理 user 消息中，`internal_chat_message_metadata_passthrough.content_item_kinds` 对应位置为 `environments.environment_context` 的文本。按原 content 索引匹配，图片等非文本项不会造成错位。用户示例、assistant 消息、工具输出保持原样；JSON 中的 `\u003c` 等转义不影响识别。Codex 可能在发送前清除类型标记。无标记时，兼容识别要求 Codex 的 UA/Originator 或专属 client_metadata 特征，以及完整且无尾随正文的环境 XML（日期、合法时区、cwd、shell）；具有同样客户端特征的请求也接受仅日期和时区的增量，包含重启后的首次增量。明确标为用户文本的内容始终不改。无标记时，用户粘贴的、与真实环境完全同形的 XML 仍无法可靠区分，这是启发式识别的边界。
 - **日期怎么换算**：对有可靠会话标识的环境片段，首次观察时若原日期是源时区的“今天”，则以插件收到请求的时刻计算目标日期，并保存首次映射。这个时刻不是历史消息的生成时间。首次遇到的更早或未来日期、未知源时区不做猜测，保留原文，另外追加目标时区的当前日期；不再按历史日期的正午估算。

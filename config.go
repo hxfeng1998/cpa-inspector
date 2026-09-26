@@ -55,13 +55,23 @@ func parseConfig(raw []byte) (config, error) {
 	cfg.MaxBodyMB = clampInt(cfg.MaxBodyMB, 1, 256)
 	cfg.LearnSamples = clampInt(cfg.LearnSamples, 1, 100000)
 	cfg.RewriteEnvTimezone = strings.TrimSpace(cfg.RewriteEnvTimezone)
-	if cfg.RewriteEnvTimezone != "" {
-		// 拒绝 Local：它取决于宿主进程的时区，与"改写成指定时区"的意图不符
-		if _, err := time.LoadLocation(cfg.RewriteEnvTimezone); err != nil || cfg.RewriteEnvTimezone == "Local" {
-			return cfg, fmt.Errorf("rewrite_env_timezone: unknown IANA time zone %q", cfg.RewriteEnvTimezone)
-		}
+	if cfg.RewriteEnvTimezone != "" && loadRewriteZone(cfg.RewriteEnvTimezone) == nil {
+		return cfg, fmt.Errorf("rewrite_env_timezone: unknown IANA time zone %q", cfg.RewriteEnvTimezone)
 	}
 	return cfg, nil
+}
+
+// loadRewriteZone 解析可作为改写目标的 IANA 时区，不可用时返回 nil。
+// 拒绝 Local：它取决于宿主进程的时区，与"改写成指定时区"的意图不符。
+func loadRewriteZone(name string) *time.Location {
+	if name == "" || name == "Local" {
+		return nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil
+	}
+	return loc
 }
 
 // envRewriteZone 返回实际生效的改写时区；开关关闭或未配置时区时为空（不改写）。
