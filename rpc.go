@@ -17,7 +17,7 @@ const (
 	pluginID = "cpa-inspector"
 	// schemaVersion 取 6：流式分片不再重复携带请求体/历史分片，management JSON 响应不做 HTML 转义。
 	schemaVersion = 6
-	pluginVersion = "0.1.9"
+	pluginVersion = "0.1.10"
 	repoURL       = "https://github.com/hxfeng1998/cpa-inspector"
 
 	methodPluginRegister          = "plugin.register"
@@ -222,7 +222,7 @@ type requestInterceptResult struct {
 var emptyResult = []byte(`{"ok":true,"result":{}}`)
 
 // dispatch 是所有宿主调用的唯一入口。抓取类钩子返回"不修改"的空结果；唯一的例外是配置了
-// rewrite_env_timezone 时，request.intercept_before 会返回改写过 environment_context 的请求体。
+// rewrite_env_timezone 且未关闭 rewrite_env_enabled 时，request.intercept_before 会返回改写过 environment_context 的请求体。
 // 任何内部错误或 panic 都不能影响代理转发。
 func dispatch(method string, request []byte) (out []byte) {
 	defer func() {
@@ -332,6 +332,7 @@ func buildRegistration(cfg config) registration {
 				{Name: "max_body_mb", Type: "integer", Description: "单个请求/响应体保留上限（MB），超出部分只分析不保存。"},
 				{Name: "learn_samples", Type: "integer", Description: "字段基线学习样本数：某作用域观测满该数量后，新出现的字段才会被报告为漂移。"},
 				{Name: "scan_secrets", Type: "boolean", Description: "扫描发往上游的请求体中是否含密钥/私钥/带口令的连接串。"},
+				{Name: "rewrite_env_enabled", Type: "boolean", Description: "是否改写 Codex 请求的时区与日期（需同时配置 rewrite_env_timezone）；关闭后请求原样转发，重新开启时沿用已有历史映射。"},
 				{Name: "rewrite_env_timezone", Type: "string", Description: "将带 Codex 环境类型标记的请求日期与时区统一为该 IANA 时区（如 America/Los_Angeles），保留历史映射并按需追加当前日期；留空不改写。"},
 			},
 		},

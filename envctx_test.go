@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -194,6 +195,35 @@ func TestInvalidRewriteZoneIsRejected(t *testing.T) {
 	cfg, err := parseConfig([]byte("rewrite_env_timezone: ' America/Los_Angeles '"))
 	if err != nil || cfg.RewriteEnvTimezone != "America/Los_Angeles" {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+}
+
+// rewrite_env_enabled 默认开启（兼容只配了时区的旧配置）；关闭后原样转发，热重载重新开启即恢复改写。
+func TestEnvRewriteSwitch(t *testing.T) {
+	cfg, err := parseConfig([]byte("rewrite_env_timezone: America/Los_Angeles"))
+	if err != nil || !cfg.RewriteEnvEnabled || cfg.envRewriteZone() != "America/Los_Angeles" {
+		t.Fatalf("switch must default to on: cfg=%+v err=%v", cfg, err)
+	}
+	setup(t, "rewrite_env_enabled: false\nrewrite_env_timezone: America/Los_Angeles")
+	dir := currentInspector().cfg.DataDir
+	reconfigure := func(enabled bool) {
+		t.Helper()
+		yaml := fmt.Sprintf("data_dir: %q\nrewrite_env_enabled: %v\nrewrite_env_timezone: America/Los_Angeles", dir, enabled)
+		call(t, methodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte(yaml), SchemaVersion: 6})
+		setClock(t, "2026-09-25T01:27:35+08:00")
+	}
+	setClock(t, "2026-09-25T01:27:35+08:00")
+	body := codexBody(t, "s1", codexEnv("2026-09-25", "Asia/Shanghai"))
+	if out := interceptBefore(t, "w1", body); out != nil {
+		t.Fatalf("disabled switch must leave the body unchanged: %s", out)
+	}
+	reconfigure(true)
+	if out := interceptBefore(t, "w2", body); !bytes.Contains(out, jsonString(codexEnv("2026-09-24", "America/Los_Angeles"))) {
+		t.Fatalf("re-enabled switch must rewrite again: %s", out)
+	}
+	reconfigure(false)
+	if out := interceptBefore(t, "w3", body); out != nil {
+		t.Fatalf("switching off at runtime must stop rewriting: %s", out)
 	}
 }
 

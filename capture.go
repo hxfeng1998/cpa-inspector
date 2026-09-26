@@ -200,7 +200,7 @@ func configureInspector(cfg config) {
 		dirChanged := global.cfg.DataDir != cfg.DataDir
 		global.cfg = cfg
 		global.mu.Unlock()
-		global.env.configure(cfg.RewriteEnvTimezone, cfg.DataDir)
+		global.env.configure(cfg.envRewriteZone(), cfg.DataDir)
 		if !dirChanged {
 			global.store.setLimits(cfg.MaxRecords, int64(cfg.MaxDiskMB)<<20)
 			return
@@ -211,7 +211,7 @@ func configureInspector(cfg config) {
 	if global != nil {
 		env = global.env // configure 按目标时区和数据目录隔离状态
 	}
-	env.configure(cfg.RewriteEnvTimezone, cfg.DataDir)
+	env.configure(cfg.envRewriteZone(), cfg.DataDir)
 	ins := &inspector{
 		cfg:      cfg,
 		active:   make(map[string]*record),
@@ -229,7 +229,7 @@ func configureInspector(cfg config) {
 	ins.findDirty = true // 迁移可能清掉了旧发现项：下一次落盘时写回
 	go ins.loop()
 	global = ins
-	logf("ready: data_dir=%s capture_upstream=%v rewrite_env_timezone=%q records=%d", cfg.DataDir, cfg.CaptureUpstream, cfg.RewriteEnvTimezone, ins.store.count())
+	logf("ready: data_dir=%s capture_upstream=%v rewrite_env_enabled=%v rewrite_env_timezone=%q records=%d", cfg.DataDir, cfg.CaptureUpstream, cfg.RewriteEnvEnabled, cfg.RewriteEnvTimezone, ins.store.count())
 }
 
 func flushInspector() {

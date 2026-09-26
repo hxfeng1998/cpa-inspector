@@ -86,6 +86,7 @@ main { padding: 28px 32px 64px; min-width: 0; }
 .seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; background: var(--raised); }
 .seg button { all: unset; cursor: pointer; padding: 5px 12px; color: var(--ink-2); font-size: 13px; }
 .seg button[aria-pressed=true] { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+.seg button:disabled { cursor: wait; opacity: .6; }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--hair); white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1; }
@@ -261,6 +262,7 @@ html.embedded .drawer .top > div:first-child { padding-right: 210px; }
 <script>
 "use strict";
 const API = "/v0/management/cpa-inspector";
+const PLUGIN_CONFIG_API = "/v0/management/plugins/cpa-inspector/config"; // 宿主接口：改写 config.yaml 中本插件的配置并热重载
 const KEY_STORE = "cpa-inspector-key";
 const $root = document.getElementById("root");
 
@@ -322,17 +324,21 @@ function toast(text) { const el = h("div", { class: "toast", role: "status" }, t
 const state = { view: "overview", key: "", overview: null, auto: true, timer: null, filters: { q: "", model: "", channel: "", severity: "", outcome: "" }, scope: "", schemaFilter: { q: "", drift: false }, findFilter: { cat: "", open: true }, offset: 0 };
 try { state.key = localStorage.getItem(KEY_STORE) || ""; } catch (e) {}
 
-async function api(path, body, sink) { // sink：本次刷新自己的签名收集数组（不能用全局变量，两次刷新会并发）
-  const res = await fetch(API + path, {
-    method: body ? "POST" : "GET", cache: "no-store", redirect: "manual",
+// mgmt 调用 Management API 并统一处理网关重定向与鉴权失败，返回响应文本。
+async function mgmt(url, method, body) {
+  const res = await fetch(url, {
+    method, cache: "no-store", redirect: "manual",
     headers: Object.assign({ Authorization: "Bearer " + state.key }, body ? { "Content-Type": "application/json" } : {}),
     body: body ? JSON.stringify(body) : undefined,
   });
   // Management API 前面若有访问网关（Cloudflare Access、Authelia 等），未登录时会被重定向到登录页。
   if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) { const e = new Error("Management API 被前置的访问网关重定向到了登录页（如 Cloudflare Access）。请先在本浏览器打开 " + location.origin + "/management.html 完成登录，再回到此页重试。"); e.auth = true; throw e; }
   if (res.status === 401 || res.status === 403) { const e = new Error("管理密钥无效，或当前来源不允许访问 Management API（远程访问需开启 allow-remote-management）"); e.auth = true; throw e; }
-  if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 200));
-  const text = await res.text();
+  if (!res.ok) { const e = new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 200)); e.status = res.status; throw e; }
+  return res.text();
+}
+async function api(path, body, sink) { // sink：本次刷新自己的签名收集数组（不能用全局变量，两次刷新会并发）
+  const text = await mgmt(API + path, body ? "POST" : "GET", body);
   if (sink) sink.push(path + "\n" + text.replace(/"now":"[^"]*"/, ""));
   const data = JSON.parse(text);
   for (const k of ["records", "inflight", "findings", "scopes", "top_findings", "hours", "models", "channels"]) if (data && data[k] === null) data[k] = []; // 兜底：列表字段永不为 null
@@ -844,10 +850,41 @@ function viewSettings() {
     h("div", { class: "grid two" },
       h("section", { class: "card" }, h("header", {}, h("h3", {}, "当前配置")), h("div", { class: "body" }, h("div", { class: "kv" }, Object.entries(c).map(([k, v]) => kv(k, String(v), true))))),
       h("section", { class: "card" }, h("header", {}, h("h3", {}, "运行状态")), h("div", { class: "body" }, h("div", { class: "kv" }, kv("启动时间", clock(o.started_at)), kv("已处理请求", nf.format(st.requests)), kv("上游分片", nf.format(st.upstream_chunks)), kv("下游分片", nf.format(st.downstream_chunks)), kv("未能关联的上游分片", nf.format(st.orphan_chunks)), kv("存储占用", bytes(o.storage.bytes) + (o.storage.memory_only ? "（数据目录不可写，仅内存）" : "")))))),
+    envRewriteCard(c),
     h("section", { class: "card", style: "margin-top:16px" }, h("header", {}, h("h3", {}, "基线与数据")), h("div", { class: "body", style: "display:grid;gap:12px" },
       h("p", { class: "sub", style: "margin:0" }, "「重建基线」表示你已审阅当前所有字段并认定为正常：全部字段并入基线，现有漂移发现标记为已确认，此后只报告新的变化。"),
       h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, act("以当前状态重建基线", {}, "/rebaseline", "primary"), act("清空请求记录", { target: "records" }, "/clear", "danger"), act("清空发现项", { target: "findings" }, "/clear", "danger"), act("清空字段图谱", { target: "schema" }, "/clear", "danger"),
         h("button", { class: "btn", onclick: () => { try { localStorage.removeItem(KEY_STORE); } catch (e) {} state.key = ""; renderGate(""); } }, "退出并清除本机保存的密钥")))));
+}
+
+// Codex 时区与日期改写开关：经宿主接口写回 config.yaml，宿主热重载后插件按新配置生效。
+function envRewriteCard(c) {
+  const zone = c.rewrite_env_timezone || "", on = c.rewrite_env_enabled !== false;
+  const status = !zone ? "未配置 rewrite_env_timezone，不改写" : on ? "生效中：改写为 " + zone : "已关闭：请求原样转发";
+  const set = async (want) => {
+    if (want === on) return;
+    seg.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    try {
+      await mgmt(PLUGIN_CONFIG_API, "PATCH", { rewrite_env_enabled: want });
+      // 宿主异步重载配置：等插件回报的配置变过来再刷新，最多约 5 秒
+      let applied = false;
+      for (let i = 0; i < 10 && !applied; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        applied = (await api("/overview")).config.rewrite_env_enabled === want;
+      }
+      toast(applied ? (want ? "已开启时区与日期改写" : "已关闭时区与日期改写") : "已保存到 config.yaml，等待宿主重载配置");
+    } catch (e) {
+      if (e.auth) return renderGate(e.message);
+      toast(e.status === 404 || e.status === 405 ? "当前 CLIProxyAPI 不支持在线修改插件配置，请在 config.yaml 中设置 rewrite_env_enabled" : "保存失败：" + e.message);
+    }
+    refresh(false);
+  };
+  const seg = h("div", { class: "seg", role: "group", "aria-label": "时区与日期改写" },
+    h("button", { "aria-pressed": String(on), onclick: () => set(true) }, "开启"),
+    h("button", { "aria-pressed": String(!on), onclick: () => set(false) }, "关闭"));
+  return h("section", { class: "card", style: "margin-top:16px" }, h("header", {}, h("h3", {}, "Codex 时区与日期改写")), h("div", { class: "body", style: "display:grid;gap:12px" },
+    h("p", { class: "sub", style: "margin:0" }, "开启后把 Codex 请求 <environment_context> 里的时区与日期改写为 rewrite_env_timezone 指定的时区；关闭后请求原样转发，重新开启时沿用已有的历史映射。切换会写回 config.yaml（rewrite_env_enabled）。"),
+    h("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, seg, h("span", { class: "muted" }, status))));
 }
 
 /* ---------- 启动 ---------- */

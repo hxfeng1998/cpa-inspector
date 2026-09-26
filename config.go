@@ -19,7 +19,9 @@ type config struct {
 	MaxBodyMB       int    `yaml:"max_body_mb" json:"max_body_mb"`
 	LearnSamples    int    `yaml:"learn_samples" json:"learn_samples"`
 	ScanSecrets     bool   `yaml:"scan_secrets" json:"scan_secrets"`
-	// RewriteEnvTimezone 非空时，把 Codex 请求里 <environment_context> 的时区与日期改写为该 IANA 时区。
+	// RewriteEnvEnabled 为 true 且 RewriteEnvTimezone 非空时，把 Codex 请求里 <environment_context>
+	// 的时区与日期改写为该 IANA 时区；关闭开关可暂停改写而不必清空时区。
+	RewriteEnvEnabled  bool   `yaml:"rewrite_env_enabled" json:"rewrite_env_enabled"`
 	RewriteEnvTimezone string `yaml:"rewrite_env_timezone" json:"rewrite_env_timezone"`
 }
 
@@ -32,6 +34,8 @@ func defaultConfig() config {
 		MaxBodyMB:       8,
 		LearnSamples:    30,
 		ScanSecrets:     true,
+		// 默认开启：旧配置只写了 rewrite_env_timezone 时保持原有改写行为
+		RewriteEnvEnabled: true,
 	}
 }
 
@@ -58,6 +62,14 @@ func parseConfig(raw []byte) (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// envRewriteZone 返回实际生效的改写时区；开关关闭或未配置时区时为空（不改写）。
+func (c config) envRewriteZone() string {
+	if !c.RewriteEnvEnabled {
+		return ""
+	}
+	return c.RewriteEnvTimezone
 }
 
 func clampInt(v, lo, hi int) int {
